@@ -37,3 +37,7 @@ preprocessing_policy.md
 # 운영체제
 .DS_Store
 Thumbs.db
+
+
+# 가상환경
+venv/
