@@ -3,6 +3,7 @@
 
 # 데이터
 output/
+JSONL 변환/output/
 
 # 벡터 DB
 vector_db/
@@ -28,6 +29,10 @@ preprocessing_policy.md
 
 # 참고 문서
 참고/
+
+# 문서 파일
+*.pdf
+*.docx
 
 # 운영체제
 .DS_Store
