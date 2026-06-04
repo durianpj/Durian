@@ -1,13 +1,8 @@
 # 환경변수 (API 키 등 민감 정보)
 .env
 
-# Python 가상환경
-venv/
-.venv/
-
 # 데이터
 output/
-JSONL 변환/output/
 
 # 벡터 DB
 vector_db/
@@ -34,10 +29,10 @@ preprocessing_policy.md
 # 참고 문서
 참고/
 
-# 문서 파일
-*.pdf
-*.docx
-
 # 운영체제
 .DS_Store
 Thumbs.db
+
+
+# 가상환경
+venv/
