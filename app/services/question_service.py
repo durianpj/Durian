@@ -143,12 +143,12 @@ def extract_employee_name(question: str) -> str | None:
 
     target_fields = (
         r"(?:부서|팀|직급|직책|이름|사원번호|사번|전화번호|연락처|휴대폰|번호|"
-        r"연봉|급여|성과|평가|주소)"
+        r"입사일|연봉|급여|성과|평가|주소)"
     )
-    name_match = re.search(rf"^([가-힣]{{2,4}})(?:의|는|이|가|을|를){target_fields}", normalized)
+    name_match = re.search(rf"^([가-힣]{{2,4}}?)(?:의|는|이|가|을|를){target_fields}", normalized)
 
     if not name_match:
-        name_match = re.search(rf"^([가-힣]{{2,4}}){target_fields}", normalized)
+        name_match = re.search(rf"^([가-힣]{{2,4}}?){target_fields}", normalized)
 
     if name_match:
         return name_match.group(1)
@@ -179,6 +179,7 @@ def extract_employee_name(question: str) -> str | None:
         "연락처",
         "휴대폰",
         "번호",
+        "입사일",
         "연봉",
         "급여",
         "성과",

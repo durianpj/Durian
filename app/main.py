@@ -1,5 +1,7 @@
+from uuid import uuid4
+
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import Cookie, FastAPI, HTTPException, Response
 from pydantic import BaseModel
 
 from app.services.llm_service import generate_answer
@@ -20,6 +22,9 @@ from app.services.hybrid_search_service import (
     get_user_permission_level,
     search_hybrid,
 )
+from app.services.session_service import resolve_question_with_session
+
+SESSION_COOKIE_NAME = "durian_session_id"
 
 
 # =========================
@@ -49,7 +54,6 @@ class RagChatRequest(BaseModel):
     # 요청한 사용자의 사번
     # 이 사번을 기준으로 권한 레벨을 자동 계산한다.
     employee_id: str
-
 
 # =========================
 # 기본 상태 확인 API
@@ -102,7 +106,11 @@ def chat(request: ChatRequest):
 # =========================
 
 @app.post("/rag-chat")
-def rag_chat(request: RagChatRequest):
+def rag_chat(
+    request: RagChatRequest,
+    response: Response,
+    durian_session_id: str | None = Cookie(default=None),
+):
     """
     권한 기반 RAG 챗봇 API이다.
 
@@ -138,6 +146,22 @@ def rag_chat(request: RagChatRequest):
             detail="employee_id를 입력해주세요.",
         )
 
+    session_id = durian_session_id or uuid4().hex
+
+    if durian_session_id is None:
+        response.set_cookie(
+            key=SESSION_COOKIE_NAME,
+            value=session_id,
+            httponly=True,
+            samesite="lax",
+        )
+
+    question = resolve_question_with_session(
+        question=request.question,
+        employee_id=request.employee_id,
+        session_id=session_id,
+    )
+
     # =========================
     # 3. employee_id 기준 권한 레벨 계산
     # =========================
@@ -168,9 +192,9 @@ def rag_chat(request: RagChatRequest):
     # - 연봉, 성과, 평가: 2
     # - 주소, 계좌번호, 징계: 3
 
-    required_level = get_required_level(request.question)
+    required_level = get_required_level(question)
 
-    if is_department_list_question(request.question):
+    if is_department_list_question(question):
         departments = get_department_types()
 
         if departments:
@@ -191,8 +215,8 @@ def rag_chat(request: RagChatRequest):
             "model_type": "rule-based",
         }
 
-    if is_department_members_question(request.question):
-        members = get_department_members(request.question)
+    if is_department_members_question(question):
+        members = get_department_members(question)
 
         if members:
             member_names = [
@@ -236,9 +260,9 @@ def rag_chat(request: RagChatRequest):
 
     # 7. 본인 질문 여부 판단
     # "내 연봉", "나의 주소"처럼 본인 데이터 조회면 본인 조회로 본다.
-    is_self = is_self_question(request.question)
+    is_self = is_self_question(question)
 
-    if is_self and is_supervisor_question(request.question):
+    if is_self and is_supervisor_question(question):
         supervisors = get_supervisors(request.employee_id)
 
         if supervisors:
@@ -325,13 +349,13 @@ def rag_chat(request: RagChatRequest):
     # =========================
 
     search_hits = search_hybrid(
-        question=request.question,
+        question=question,
         permission_level=search_permission_level,
         employee_id=search_employee_id,
         size=5,
     )
 
-    if is_phone_number_question(request.question):
+    if is_phone_number_question(question):
         phone_answer = None
 
         for hit in search_hits:
@@ -379,7 +403,7 @@ def rag_chat(request: RagChatRequest):
     # =========================
 
     answer = generate_answer(
-        question=request.question,
+        question=question,
         context=context,
     )
 
