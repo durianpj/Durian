@@ -22,18 +22,21 @@ def is_self_question(question: str) -> bool:
     if not question:
         return False
 
-    # 본인 조회로 판단할 키워드 목록
-    self_keywords = ["내", "나의", "본인", "나는", "난"]
+    normalized = question.strip().replace(" ", "")
 
-    # 질문 안에 본인 조회 키워드가 하나라도 있으면 True 반환
-    for keyword in self_keywords:
-        if keyword in question:
+    # "사내", "내일"처럼 본인 조회가 아닌 단어 안의 "내"는 제외한다.
+    if normalized.startswith("내일"):
+        return False
+
+    # 본인 조회는 보통 질문 앞에서 "내/나의/본인/나는/난"으로 시작한다.
+    self_prefixes = ["나의", "나는", "본인", "내", "난"]
+
+    for prefix in self_prefixes:
+        if normalized.startswith(prefix):
             return True
 
     # 해당 키워드가 없으면 본인 질문이 아님
     return False
-
-import re
 
 
 def extract_employee_name(question: str) -> str | None:
@@ -48,10 +51,27 @@ def extract_employee_name(question: str) -> str | None:
     if not question:
         return None
 
+    normalized = question.replace(" ", "")
+
+    if is_self_question(normalized):
+        return None
+
+    target_fields = r"(?:부서|팀|직급|직책|이름|사원번호|사번|연봉|급여|성과|평가|주소)"
+    name_match = re.search(rf"^([가-힣]{{2,4}})(?:의|는|이|가|을|를){target_fields}", normalized)
+
+    if not name_match:
+        name_match = re.search(rf"^([가-힣]{{2,4}}){target_fields}", normalized)
+
+    if name_match:
+        return name_match.group(1)
+
     # 질문에서 제거할 일반 단어들
     remove_words = [
         "알려줘",
         "말해줘",
+        "찾아줘",
+        "직원",
+        "일정",
         "뭐야",
         "무엇",
         "어디",
@@ -74,14 +94,18 @@ def extract_employee_name(question: str) -> str | None:
         "난",
     ]
 
-    cleaned = question.replace(" ", "")
+    cleaned = normalized
+
+    for department in ["마케팅부", "기획부", "인사부", "개발부", "영업부", "재무부"]:
+        cleaned = cleaned.replace(department, "")
 
     for word in remove_words:
         cleaned = cleaned.replace(word, "")
 
-    # 조사 제거
-    for particle in ["은", "는", "이", "가", "을", "를", "의", "?"]:
-        cleaned = cleaned.replace(particle, "")
+    # 이름 뒤에 붙은 조사는 끝에 있을 때만 제거한다.
+    for particle in ["의", "은", "는", "이", "가", "을", "를", "?"]:
+        if len(cleaned) > 2 and cleaned.endswith(particle):
+            cleaned = cleaned[: -len(particle)]
 
     # 한글 2~4글자 이름 추출
     match = re.search(r"[가-힣]{2,4}", cleaned)

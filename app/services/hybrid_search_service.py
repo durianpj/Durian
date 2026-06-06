@@ -308,11 +308,14 @@ def search_bm25(question, permission_level, employee_id=None, size=5):
 
         departments = ["마케팅부", "기획부", "인사부", "개발부", "영업부", "재무부"]
 
+        department_matched = False
+
         for department in departments:
             if department in question:
                 query["query"]["bool"]["filter"].append(
                     {"term": {"department": department}}
                 )
+                department_matched = True
                 break
 
         # =========================
@@ -321,7 +324,10 @@ def search_bm25(question, permission_level, employee_id=None, size=5):
         # 현재 데이터에 employee_name 필드가 없기 때문에
         # 임시로 embedding_text에 이름이 포함된 문서만 검색한다.
 
-        target_name = extract_employee_name(question)
+        target_name = None
+
+        if not department_matched:
+            target_name = extract_employee_name(question)
 
         if target_name:
             query["query"]["bool"]["filter"].append(

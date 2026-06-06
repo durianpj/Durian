@@ -298,6 +298,8 @@ def get_required_level(question: str) -> int:
         "주민번호",
         "주민등록번호",
         "계좌번호",
+        "은행",
+        "급여은행",
         "징계",
         "퇴직",
     ]
