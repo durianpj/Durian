@@ -107,7 +107,13 @@ def extract_phone_number_from_source(source):
     이메일을 번호로 오인하지 않도록 010-0000-0000 형태만 허용한다.
     """
 
-    phone_number = source.get("phone_number") or source.get("phone")
+    phone_number = (
+        source.get("phone_number")
+        or source.get("phone")
+        or source.get("전화번호")
+        or source.get("연락처")
+        or source.get("휴대폰")
+    )
 
     if phone_number:
         return phone_number
@@ -659,12 +665,6 @@ def search_vector(question, question_vector, permission_level, employee_id=None,
             }
         },
     }
-
-    # employee_id가 있으면 해당 사번 문서만 검색한다.
-    if employee_id:
-        query["query"]["bool"]["filter"].append({"term": {"employee_id": employee_id}})
-
-    
 
     # OpenSearch에 벡터 검색 요청을 보낸다.
     response = client.search(
