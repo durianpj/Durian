@@ -163,7 +163,13 @@ def rag_chat(request: RagChatRequest):
     # 5. 권한 부족 시 차단
     # =========================
 
-    if permission_level < required_level:
+    # 7. 본인 질문 여부 판단
+    # "내 연봉", "나의 주소"처럼 본인 데이터 조회면 본인 조회로 본다.
+    is_self = is_self_question(request.question)
+
+    # 8. 사용자 권한보다 높은 정보 요청 시 차단
+    # 단, 본인 정보 조회는 본인이 조회 가능하도록 허용한다.
+    if not is_self and permission_level < required_level:
         return {
             "success": False,
             "answer": "해당 정보에 접근할 권한이 없습니다.",
@@ -180,51 +186,44 @@ def rag_chat(request: RagChatRequest):
     # =========================
     # 6. 본인 정보 조회 여부 판단
     # =========================
-    # "내 부서 알려줘", "나의 직급 알려줘" 같은 질문이면
+    # "내 부서 알려줘", "내 연봉 알려줘" 같은 질문이면
     # 요청한 employee_id로 검색 결과를 제한한다.
-    #
-    # 이렇게 하지 않으면 여러 사람 문서가 검색되어
-    # LLM 답변이 섞일 수 있다.
 
     search_employee_id = None
 
-    if is_self_question(request.question):
+    if is_self:
         search_employee_id = request.employee_id
 
+
     # =========================
-    # 7. OpenSearch 하이브리드 검색 실행
+    # 7. 검색에 사용할 권한 레벨 결정
     # =========================
-    # search_hybrid() 내부에서
-    # BM25 검색 + 벡터 검색 + RRF 병합을 수행한다.
+    # 기본적으로는 요청자의 permission_level을 사용한다.
+    # 단, 본인 조회인 경우에는 본인 데이터 조회를 허용하기 위해
+    # 질문에서 필요한 required_level까지 검색 범위를 넓힌다.
     #
-    # search_employee_id가 None이면 전체 검색
-    # search_employee_id가 있으면 해당 사번만 검색
+    # 예:
+    # permission_level = 1
+    # required_level = 2
+    # 질문 = "내 연봉 알려줘"
+    # → 본인 조회이므로 search_permission_level = 2
+
+    search_permission_level = permission_level
+
+    if is_self:
+        search_permission_level = max(permission_level, required_level)
+
+
+    # =========================
+    # 8. OpenSearch 하이브리드 검색 실행
+    # =========================
 
     search_hits = search_hybrid(
         question=request.question,
-        permission_level=permission_level,
+        permission_level=search_permission_level,
         employee_id=search_employee_id,
         size=5,
     )
-
-    # =========================
-    # 8. 검색 결과 없음 처리
-    # =========================
-
-    if not search_hits:
-        return {
-            "success": False,
-            "answer": "관련 정보를 찾을 수 없습니다.",
-            "permission": {
-                "allowed": True,
-                "employee_id": request.employee_id,
-                "permission_level": permission_level,
-                "required_level": required_level,
-            },
-            "sources": [],
-            "model_type": "gemma3:4b",
-        }
-
     # =========================
     # 9. 검색 결과를 LLM Context로 변환
     # =========================
