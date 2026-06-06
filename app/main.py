@@ -5,11 +5,13 @@ from pydantic import BaseModel
 from app.services.llm_service import generate_answer
 from app.services.question_service import (
     is_department_list_question,
+    is_department_members_question,
     is_self_question,
     is_supervisor_question,
 )
 from app.services.hybrid_search_service import (
     build_context,
+    get_department_members,
     get_department_types,
     get_supervisors,
     get_user_permission_level,
@@ -183,6 +185,41 @@ def rag_chat(request: RagChatRequest):
                 "required_level": required_level,
             },
             "sources": [],
+            "model_type": "rule-based",
+        }
+
+    if is_department_members_question(request.question):
+        members = get_department_members(request.question)
+
+        if members:
+            member_names = [
+                f"{member['name']} {member['position']}"
+                for member in members
+            ]
+            answer = "해당 구성원은 " + ", ".join(member_names) + "입니다."
+        else:
+            answer = "조회된 데이터에서 확인할 수 없습니다."
+
+        return {
+            "success": True,
+            "answer": answer,
+            "permission": {
+                "allowed": True,
+                "employee_id": request.employee_id,
+                "permission_level": permission_level,
+                "required_level": required_level,
+            },
+            "sources": [
+                {
+                    "index": member["index"],
+                    "_id": member["_id"],
+                    "employee_id": member["employee_id"],
+                    "department": member["department"],
+                    "position": member["position"],
+                    "score": member["score"],
+                }
+                for member in members
+            ],
             "model_type": "rule-based",
         }
 

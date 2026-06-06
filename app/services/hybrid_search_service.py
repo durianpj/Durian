@@ -45,6 +45,8 @@ POSITION_RANK = {
     "사장": 10,
 }
 
+DEPARTMENTS = ["마케팅부", "기획부", "인사부", "개발부", "영업부", "재무부"]
+
 
 def get_search_indices(question, permission_level):
     """
@@ -84,6 +86,18 @@ def extract_employee_name_from_source(source):
         return name_part.split()[0] if name_part else ""
 
     return embedding_text.split()[0] if embedding_text else ""
+
+
+def extract_department_from_question(question):
+    """
+    질문에 포함된 부서명을 추출한다.
+    """
+
+    for department in DEPARTMENTS:
+        if department in question:
+            return department
+
+    return None
 
 
 # =========================
@@ -340,6 +354,58 @@ def get_department_types() -> list[str]:
     return [bucket["key"] for bucket in buckets if bucket.get("key")]
 
 
+def get_department_members(question: str, size=1000) -> list[dict]:
+    """
+    질문에 포함된 부서의 구성원 목록을 조회한다.
+    '팀원'이나 '팀장'이 질문에 있으면 embedding_text 기준으로 직책도 제한한다.
+    """
+
+    department = extract_department_from_question(question)
+
+    if not department:
+        return []
+
+    filters = [{"term": {"department": department}}]
+
+    query = {
+        "query": {
+            "bool": {
+                "must": [{"match_all": {}}],
+                "filter": filters,
+            }
+        },
+        "size": size,
+    }
+
+    if "팀원" in question:
+        query["query"]["bool"]["must"].append(
+            {"match_phrase": {"embedding_text": "팀원"}}
+        )
+    elif "팀장" in question:
+        query["query"]["bool"]["must"].append(
+            {"match_phrase": {"embedding_text": "팀장"}}
+        )
+
+    response = client.search(index=["hr_basic_1"], body=query)
+    members = []
+
+    for hit in response["hits"]["hits"]:
+        source = hit["_source"]
+        members.append(
+            {
+                "employee_id": source.get("employee_id"),
+                "name": extract_employee_name_from_source(source),
+                "department": source.get("department"),
+                "position": source.get("position"),
+                "index": hit["_index"],
+                "_id": hit["_id"],
+                "score": hit.get("_score"),
+            }
+        )
+
+    return sorted(members, key=lambda item: (item["position"] or "", item["name"]))
+
+
 def get_supervisors(employee_id: str) -> list[dict]:
     """
     요청자와 같은 부서에서 요청자보다 직급 순위가 높은 직원을 조회한다.
@@ -463,11 +529,9 @@ def search_bm25(question, permission_level, employee_id=None, size=5):
         # "마케팅부 직원 찾아줘"처럼 부서명이 있으면
         # department 필드로 정확히 제한한다.
 
-        departments = ["마케팅부", "기획부", "인사부", "개발부", "영업부", "재무부"]
-
         department_matched = False
 
-        for department in departments:
+        for department in DEPARTMENTS:
             if department in question:
                 query["query"]["bool"]["filter"].append(
                     {"term": {"department": department}}

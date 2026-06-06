@@ -62,6 +62,30 @@ def is_department_list_question(question: str) -> bool:
     return any(keyword in normalized for keyword in list_keywords)
 
 
+def is_department_members_question(question: str) -> bool:
+    """
+    특정 부서의 직원/팀원 목록을 묻는 질문인지 판단한다.
+
+    예:
+    - 인사부 팀원 다 알려줘
+    - 마케팅부 직원 전체 알려줘
+    """
+
+    if not question:
+        return False
+
+    normalized = question.replace(" ", "")
+    departments = ["마케팅부", "기획부", "인사부", "개발부", "영업부", "재무부"]
+    member_keywords = ["직원", "팀원", "팀장", "구성원", "사람"]
+    list_keywords = ["다", "전체", "전부", "목록", "리스트", "알려줘", "보여줘"]
+
+    has_department = any(department in normalized for department in departments)
+    has_member_keyword = any(keyword in normalized for keyword in member_keywords)
+    has_list_keyword = any(keyword in normalized for keyword in list_keywords)
+
+    return has_department and has_member_keyword and has_list_keyword
+
+
 def is_supervisor_question(question: str) -> bool:
     """
     상사나 윗 직급자를 묻는 질문인지 판단한다.
