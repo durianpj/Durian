@@ -125,6 +125,15 @@ def build_context(search_hits):
         employee_id = source.get("employee_id", "")
         department = source.get("department", "")
         position = source.get("position", "")
+        address = source.get("address", "")
+        address_line = f"주소: {address}\n" if address else ""
+
+        # employee_name 필드가 아직 없으므로
+        # embedding_text의 첫 번째 단어를 이름으로 임시 추정한다.
+        employee_name = source.get("employee_name", "")
+
+        if not employee_name and embedding_text:
+            employee_name = embedding_text.split()[0]
 
         # 인덱스명 기준으로 문서 유형 표시
         # 기존 데이터 구조는 바꾸지 않고, LLM에게 설명만 추가한다.
@@ -142,7 +151,7 @@ def build_context(search_hits):
 사번: {employee_id}
 부서: {department}
 직급/직책: {position}
-내용: {embedding_text}
+{address_line}내용: {embedding_text}
 """.strip()
 
         context_list.append(context)
@@ -245,14 +254,14 @@ def search_bm25(question, permission_level, employee_id=None, size=5):
     indices = ACCESSIBLE_INDICES.get(permission_level, [])
     # 질문 내용에 따라 검색할 인덱스를 좁힌다.
     # 예: 연봉 질문이면 salary 인덱스만 검색한다.
-    if any(keyword in question for keyword in ["연봉", "급여", "월급"]):
+    if any(keyword in question for keyword  in ["연봉", "급여", "월급", "계좌번호", "은행"]):
         indices = [index for index in indices if "salary" in index]
 
     elif any(keyword in question for keyword in ["성과", "평가", "고과"]):
         indices = [index for index in indices if "performance" in index]
 
-    elif any(keyword in question for keyword in ["주소", "주민번호", "주민등록번호", "계좌번호"]):
-        indices = [index for index in indices if "basic_3" in index or "salary" in index]
+    elif any(keyword in question for keyword in ["주소", "주민번호", "주민등록번호"]):
+        indices = [index for index in indices if "basic_3" in index]
 
     # 필터링 후 검색할 인덱스가 없으면 빈 결과 반환
     if not indices:
