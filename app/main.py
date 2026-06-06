@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from app.services.llm_service import generate_answer
 from app.services.question_service import (
+    is_all_info_question,
     is_basic_info_question,
     is_department_list_question,
     is_department_members_question,
@@ -195,6 +196,20 @@ def rag_chat(
     # - 주소, 계좌번호, 징계: 3
 
     required_level = get_required_level(question)
+
+    if is_all_info_question(question):
+        return {
+            "success": False,
+            "answer": "모든 정보를 한 번에 조회할 수 없습니다. 이름, 부서, 직급, 이메일, 입사일, 연봉, 주소처럼 필요한 항목을 하나씩 질문해주세요.",
+            "permission": {
+                "allowed": False,
+                "employee_id": request.employee_id,
+                "permission_level": permission_level,
+                "required_level": required_level,
+            },
+            "sources": [],
+            "model_type": "rule-based",
+        }
 
     if is_self_question(question) and is_basic_info_question(question):
         basic_info = get_employee_basic_info(request.employee_id)

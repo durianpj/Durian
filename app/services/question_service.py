@@ -137,6 +137,20 @@ def is_basic_info_question(question: str) -> bool:
     return "기본정보" in normalized
 
 
+def is_all_info_question(question: str) -> bool:
+    """
+    모든 정보나 전체 정보를 한 번에 요구하는 질문인지 판단한다.
+    """
+
+    if not question:
+        return False
+
+    normalized = question.replace(" ", "")
+    all_info_keywords = ["모든정보", "전체정보", "전부알려줘", "다알려줘"]
+
+    return any(keyword in normalized for keyword in all_info_keywords)
+
+
 def extract_employee_name(question: str) -> str | None:
     """
     질문에서 직원 이름으로 보이는 한글 이름을 추출한다.
