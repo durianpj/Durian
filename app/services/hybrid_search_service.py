@@ -1,4 +1,5 @@
 import os
+import re
 from dotenv import load_dotenv
 from opensearchpy import OpenSearch
 from transformers import AutoTokenizer, AutoModel
@@ -98,6 +99,23 @@ def extract_department_from_question(question):
             return department
 
     return None
+
+
+def extract_phone_number_from_source(source):
+    """
+    구조화 필드 또는 embedding_text에서 실제 전화번호 패턴만 추출한다.
+    이메일을 번호로 오인하지 않도록 010-0000-0000 형태만 허용한다.
+    """
+
+    phone_number = source.get("phone_number") or source.get("phone")
+
+    if phone_number:
+        return phone_number
+
+    embedding_text = source.get("embedding_text", "")
+    match = re.search(r"01[016789]-\d{3,4}-\d{4}", embedding_text)
+
+    return match.group(0) if match else ""
 
 
 # =========================
@@ -313,8 +331,11 @@ def get_user_permission_level(employee_id: str) -> int | None:
 
     source = hits[0]["_source"]
 
-    department_level = source.get("department_level", 1)
-    job_grade_level = source.get("job_grade_level", 1)
+    department_level = source.get("department_level", source.get("부서레벨", 1))
+    job_grade_level = source.get("job_grade_level", source.get("직급레벨", 1))
+
+    department_level = int(department_level)
+    job_grade_level = int(job_grade_level)
 
     return max(department_level, job_grade_level)
 

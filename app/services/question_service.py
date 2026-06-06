@@ -105,6 +105,25 @@ def is_supervisor_question(question: str) -> bool:
     return any(keyword in normalized for keyword in supervisor_keywords)
 
 
+def is_phone_number_question(question: str) -> bool:
+    """
+    전화번호/연락처를 묻는 질문인지 판단한다.
+    사원번호와 계좌번호는 별도 항목이므로 제외한다.
+    """
+
+    if not question:
+        return False
+
+    normalized = question.replace(" ", "")
+
+    if "사원번호" in normalized or "계좌번호" in normalized:
+        return False
+
+    phone_keywords = ["전화번호", "연락처", "휴대폰", "번호"]
+
+    return any(keyword in normalized for keyword in phone_keywords)
+
+
 def extract_employee_name(question: str) -> str | None:
     """
     질문에서 직원 이름으로 보이는 한글 이름을 추출한다.
@@ -122,7 +141,10 @@ def extract_employee_name(question: str) -> str | None:
     if is_self_question(normalized):
         return None
 
-    target_fields = r"(?:부서|팀|직급|직책|이름|사원번호|사번|연봉|급여|성과|평가|주소)"
+    target_fields = (
+        r"(?:부서|팀|직급|직책|이름|사원번호|사번|전화번호|연락처|휴대폰|번호|"
+        r"연봉|급여|성과|평가|주소)"
+    )
     name_match = re.search(rf"^([가-힣]{{2,4}})(?:의|는|이|가|을|를){target_fields}", normalized)
 
     if not name_match:
@@ -145,9 +167,18 @@ def extract_employee_name(question: str) -> str | None:
         "팀",
         "직급",
         "직책",
+        "사원",
+        "대리",
+        "과장",
+        "차장",
+        "부장",
         "이름",
         "사원번호",
         "사번",
+        "전화번호",
+        "연락처",
+        "휴대폰",
+        "번호",
         "연봉",
         "급여",
         "성과",

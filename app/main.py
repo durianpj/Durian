@@ -6,11 +6,14 @@ from app.services.llm_service import generate_answer
 from app.services.question_service import (
     is_department_list_question,
     is_department_members_question,
+    is_phone_number_question,
     is_self_question,
     is_supervisor_question,
 )
 from app.services.hybrid_search_service import (
     build_context,
+    extract_employee_name_from_source,
+    extract_phone_number_from_source,
     get_department_members,
     get_department_types,
     get_supervisors,
@@ -327,6 +330,44 @@ def rag_chat(request: RagChatRequest):
         employee_id=search_employee_id,
         size=5,
     )
+
+    if is_phone_number_question(request.question):
+        phone_answer = None
+
+        for hit in search_hits:
+            source = hit.get("_source", {})
+            phone_number = extract_phone_number_from_source(source)
+
+            if phone_number:
+                employee_name = extract_employee_name_from_source(source)
+                phone_answer = f"{employee_name}님의 전화번호는 {phone_number}입니다."
+                break
+
+        if phone_answer is None:
+            phone_answer = "조회된 데이터에서 확인할 수 없습니다."
+
+        return {
+            "success": True,
+            "answer": phone_answer,
+            "permission": {
+                "allowed": True,
+                "employee_id": request.employee_id,
+                "permission_level": permission_level,
+                "required_level": required_level,
+            },
+            "sources": [
+                {
+                    "index": hit["_index"],
+                    "_id": hit["_id"],
+                    "employee_id": hit.get("_source", {}).get("employee_id"),
+                    "department": hit.get("_source", {}).get("department"),
+                    "position": hit.get("_source", {}).get("position"),
+                    "score": hit.get("_score"),
+                }
+                for hit in search_hits
+            ],
+            "model_type": "rule-based",
+        }
     # =========================
     # 9. 검색 결과를 LLM Context로 변환
     # =========================
