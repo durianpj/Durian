@@ -387,22 +387,26 @@ def get_department_members(question: str, size=1000) -> list[dict]:
         )
 
     response = client.search(index=["hr_basic_1"], body=query)
-    members = []
+    members_by_employee_id = {}
 
     for hit in response["hits"]["hits"]:
         source = hit["_source"]
-        members.append(
-            {
-                "employee_id": source.get("employee_id"),
-                "name": extract_employee_name_from_source(source),
-                "department": source.get("department"),
-                "position": source.get("position"),
-                "index": hit["_index"],
-                "_id": hit["_id"],
-                "score": hit.get("_score"),
-            }
-        )
+        employee_id = source.get("employee_id") or hit["_id"]
 
+        if employee_id in members_by_employee_id:
+            continue
+
+        members_by_employee_id[employee_id] = {
+            "employee_id": source.get("employee_id"),
+            "name": extract_employee_name_from_source(source),
+            "department": source.get("department"),
+            "position": source.get("position"),
+            "index": hit["_index"],
+            "_id": hit["_id"],
+            "score": hit.get("_score"),
+        }
+
+    members = list(members_by_employee_id.values())
     return sorted(members, key=lambda item: (item["position"] or "", item["name"]))
 
 

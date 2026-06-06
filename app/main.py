@@ -196,7 +196,11 @@ def rag_chat(request: RagChatRequest):
                 f"{member['name']} {member['position']}"
                 for member in members
             ]
-            answer = "해당 구성원은 " + ", ".join(member_names) + "입니다."
+            answer = (
+                f"해당 구성원은 총 {len(members)}명입니다. "
+                + ", ".join(member_names)
+                + "입니다."
+            )
         else:
             answer = "조회된 데이터에서 확인할 수 없습니다."
 
