@@ -272,6 +272,41 @@ def get_user_permission_level(employee_id: str) -> int | None:
     return max(department_level, job_grade_level)
 
 
+def get_department_types() -> list[str]:
+    """
+    기본 인사 인덱스에서 부서 고유값 목록을 조회한다.
+
+    부서명은 1레벨 기본 정보이므로 hr_basic_1 기준으로 집계한다.
+    """
+
+    query = {
+        "size": 0,
+        "aggs": {
+            "departments": {
+                "terms": {
+                    "field": "department.keyword",
+                    "size": 100,
+                    "order": {"_key": "asc"},
+                }
+            }
+        },
+    }
+
+    response = client.search(index=["hr_basic_1"], body=query)
+    buckets = response.get("aggregations", {}).get("departments", {}).get("buckets", [])
+
+    departments = [bucket["key"] for bucket in buckets if bucket.get("key")]
+
+    if departments:
+        return departments
+
+    query["aggs"]["departments"]["terms"]["field"] = "department"
+    response = client.search(index=["hr_basic_1"], body=query)
+    buckets = response.get("aggregations", {}).get("departments", {}).get("buckets", [])
+
+    return [bucket["key"] for bucket in buckets if bucket.get("key")]
+
+
 # =========================
 # BM25 검색 함수
 # =========================

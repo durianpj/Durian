@@ -3,9 +3,10 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from app.services.llm_service import generate_answer
-from app.services.question_service import is_self_question
+from app.services.question_service import is_department_list_question, is_self_question
 from app.services.hybrid_search_service import (
     build_context,
+    get_department_types,
     get_user_permission_level,
     search_hybrid,
 )
@@ -158,6 +159,27 @@ def rag_chat(request: RagChatRequest):
     # - 주소, 계좌번호, 징계: 3
 
     required_level = get_required_level(request.question)
+
+    if is_department_list_question(request.question):
+        departments = get_department_types()
+
+        if departments:
+            answer = "부서 종류는 " + ", ".join(departments) + "입니다."
+        else:
+            answer = "조회된 데이터에서 확인할 수 없습니다."
+
+        return {
+            "success": True,
+            "answer": answer,
+            "permission": {
+                "allowed": True,
+                "employee_id": request.employee_id,
+                "permission_level": permission_level,
+                "required_level": required_level,
+            },
+            "sources": [],
+            "model_type": "rule-based",
+        }
 
     # =========================
     # 5. 권한 부족 시 차단

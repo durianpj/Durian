@@ -39,6 +39,29 @@ def is_self_question(question: str) -> bool:
     return False
 
 
+def is_department_list_question(question: str) -> bool:
+    """
+    부서의 종류나 목록을 묻는 질문인지 판단한다.
+
+    예:
+    - 부서 종류 알려줘
+    - 부서 목록 알려줘
+    - 어떤 부서가 있어?
+    """
+
+    if not question:
+        return False
+
+    normalized = question.replace(" ", "")
+
+    if "부서" not in normalized:
+        return False
+
+    list_keywords = ["종류", "목록", "리스트", "어떤", "전체", "전부"]
+
+    return any(keyword in normalized for keyword in list_keywords)
+
+
 def extract_employee_name(question: str) -> str | None:
     """
     질문에서 직원 이름으로 보이는 한글 이름을 추출한다.
