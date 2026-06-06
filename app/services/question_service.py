@@ -62,6 +62,25 @@ def is_department_list_question(question: str) -> bool:
     return any(keyword in normalized for keyword in list_keywords)
 
 
+def is_supervisor_question(question: str) -> bool:
+    """
+    상사나 윗 직급자를 묻는 질문인지 판단한다.
+
+    예:
+    - 내 상사들 알려줘
+    - 나의 윗사람 알려줘
+    - 내 관리자 누구야?
+    """
+
+    if not question:
+        return False
+
+    normalized = question.replace(" ", "")
+    supervisor_keywords = ["상사", "윗사람", "관리자", "윗직급"]
+
+    return any(keyword in normalized for keyword in supervisor_keywords)
+
+
 def extract_employee_name(question: str) -> str | None:
     """
     질문에서 직원 이름으로 보이는 한글 이름을 추출한다.

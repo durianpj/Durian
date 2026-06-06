@@ -32,6 +32,19 @@ ACCESSIBLE_INDICES = {
     ],
 }
 
+POSITION_RANK = {
+    "사원": 1,
+    "대리": 2,
+    "과장": 3,
+    "차장": 4,
+    "부장": 5,
+    "이사": 6,
+    "상무": 7,
+    "전무": 8,
+    "부사장": 9,
+    "사장": 10,
+}
+
 
 def get_search_indices(question, permission_level):
     """
@@ -51,6 +64,26 @@ def get_search_indices(question, permission_level):
         return [index for index in indices if "basic_3" in index]
 
     return indices
+
+
+def extract_employee_name_from_source(source):
+    """
+    OpenSearch 문서에서 직원 이름을 추출한다.
+    새 embedding_text의 '이름:' 형식과 기존 첫 단어 형식을 모두 지원한다.
+    """
+
+    employee_name = source.get("employee_name") or source.get("name")
+
+    if employee_name:
+        return employee_name
+
+    embedding_text = source.get("embedding_text", "")
+
+    if "이름:" in embedding_text:
+        name_part = embedding_text.split("이름:", 1)[1].strip()
+        return name_part.split()[0] if name_part else ""
+
+    return embedding_text.split()[0] if embedding_text else ""
 
 
 # =========================
@@ -305,6 +338,68 @@ def get_department_types() -> list[str]:
     buckets = response.get("aggregations", {}).get("departments", {}).get("buckets", [])
 
     return [bucket["key"] for bucket in buckets if bucket.get("key")]
+
+
+def get_supervisors(employee_id: str) -> list[dict]:
+    """
+    요청자와 같은 부서에서 요청자보다 직급 순위가 높은 직원을 조회한다.
+    """
+
+    user_query = {
+        "query": {"bool": {"filter": [{"term": {"employee_id": employee_id}}]}},
+        "size": 1,
+    }
+
+    user_response = client.search(index=["hr_basic_1"], body=user_query)
+    user_hits = user_response["hits"]["hits"]
+
+    if not user_hits:
+        return []
+
+    user_source = user_hits[0]["_source"]
+    department = user_source.get("department", "")
+    user_position = user_source.get("position", "")
+    user_rank = POSITION_RANK.get(user_position, 0)
+
+    if not department or not user_rank:
+        return []
+
+    query = {
+        "query": {
+            "bool": {
+                "must": [{"match_all": {}}],
+                "filter": [{"term": {"department": department}}],
+                "must_not": [{"term": {"employee_id": employee_id}}],
+            }
+        },
+        "size": 100,
+    }
+
+    response = client.search(index=["hr_basic_1"], body=query)
+    supervisors = []
+
+    for hit in response["hits"]["hits"]:
+        source = hit["_source"]
+        position = source.get("position", "")
+        rank = POSITION_RANK.get(position, 0)
+
+        if rank <= user_rank:
+            continue
+
+        supervisors.append(
+            {
+                "employee_id": source.get("employee_id"),
+                "name": extract_employee_name_from_source(source),
+                "department": source.get("department"),
+                "position": position,
+                "rank": rank,
+                "index": hit["_index"],
+                "_id": hit["_id"],
+                "score": hit.get("_score"),
+            }
+        )
+
+    return sorted(supervisors, key=lambda item: (-item["rank"], item["name"]))
 
 
 # =========================

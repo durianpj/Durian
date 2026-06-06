@@ -3,10 +3,15 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from app.services.llm_service import generate_answer
-from app.services.question_service import is_department_list_question, is_self_question
+from app.services.question_service import (
+    is_department_list_question,
+    is_self_question,
+    is_supervisor_question,
+)
 from app.services.hybrid_search_service import (
     build_context,
     get_department_types,
+    get_supervisors,
     get_user_permission_level,
     search_hybrid,
 )
@@ -188,6 +193,41 @@ def rag_chat(request: RagChatRequest):
     # 7. 본인 질문 여부 판단
     # "내 연봉", "나의 주소"처럼 본인 데이터 조회면 본인 조회로 본다.
     is_self = is_self_question(request.question)
+
+    if is_self and is_supervisor_question(request.question):
+        supervisors = get_supervisors(request.employee_id)
+
+        if supervisors:
+            supervisor_names = [
+                f"{supervisor['name']} {supervisor['position']}"
+                for supervisor in supervisors
+            ]
+            answer = "상사는 " + ", ".join(supervisor_names) + "입니다."
+        else:
+            answer = "조회된 데이터에서 확인할 수 없습니다."
+
+        return {
+            "success": True,
+            "answer": answer,
+            "permission": {
+                "allowed": True,
+                "employee_id": request.employee_id,
+                "permission_level": permission_level,
+                "required_level": required_level,
+            },
+            "sources": [
+                {
+                    "index": supervisor["index"],
+                    "_id": supervisor["_id"],
+                    "employee_id": supervisor["employee_id"],
+                    "department": supervisor["department"],
+                    "position": supervisor["position"],
+                    "score": supervisor["score"],
+                }
+                for supervisor in supervisors
+            ],
+            "model_type": "rule-based",
+        }
 
     # 8. 사용자 권한보다 높은 정보 요청 시 차단
     # 단, 본인 정보 조회는 본인이 조회 가능하도록 허용한다.
