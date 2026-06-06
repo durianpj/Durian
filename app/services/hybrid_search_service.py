@@ -4,6 +4,8 @@ from opensearchpy import OpenSearch
 from transformers import AutoTokenizer, AutoModel
 import torch
 
+from app.services.question_service import extract_employee_name
+
 # =========================
 # 권한별 접근 가능 인덱스 설정
 # =========================
@@ -222,8 +224,10 @@ def search_bm25(question, permission_level, employee_id=None, size=5):
     """
     embedding_text 필드를 대상으로 BM25 기반 키워드 검색을 수행한다.
 
-    BM25 검색은 질문에 포함된 단어가 문서에 얼마나 잘 매칭되는지 기준으로 검색한다.
-    예: "마케팅부 사원"이라는 단어가 들어간 문서를 잘 찾는다.
+    - employee_id가 있으면 본인/특정 사번 조회로 보고 employee_id 필터 중심으로 조회한다.
+    - employee_id가 없으면 질문 내용을 embedding_text에서 검색한다.
+    - 질문에 부서명이 있으면 department 필터를 추가한다.
+    - 질문에 직원 이름이 있으면 embedding_text에서 이름을 match_phrase로 제한한다.
     """
 
     # 권한 레벨에 따라 검색 가능한 인덱스만 가져온다.
@@ -233,10 +237,14 @@ def search_bm25(question, permission_level, employee_id=None, size=5):
         print("접근 가능한 인덱스가 없습니다.")
         return []
 
-    # OpenSearch Query DSL
-    # employee_id가 있으면 본인/특정 사번 조회이므로
-    # embedding_text match를 강하게 걸지 않고 filter 중심으로 조회한다.
+    # =========================
+    # 1. 기본 Query DSL 생성
+    # =========================
+
     if employee_id:
+        # 본인 조회 또는 특정 사번 조회
+        # "내 부서 알려줘" 같은 질문은 embedding_text에 그대로 없을 수 있으므로
+        # match 검색 대신 employee_id 필터로 정확 조회한다.
         query = {
             "query": {
                 "bool": {
@@ -249,6 +257,8 @@ def search_bm25(question, permission_level, employee_id=None, size=5):
             "size": size,
         }
     else:
+        # 일반 검색
+        # 예: "마케팅부 직원 찾아줘", "성과 좋은 직원 찾아줘"
         query = {
             "query": {
                 "bool": {
@@ -259,9 +269,12 @@ def search_bm25(question, permission_level, employee_id=None, size=5):
             "size": size,
         }
 
-    # 질문에 부서명이 있으면 department 필터 추가
-# employee_id가 없을 때만 부서 필터 적용
-    if not employee_id:
+        # =========================
+        # 2. 부서 필터 추가
+        # =========================
+        # "마케팅부 직원 찾아줘"처럼 부서명이 있으면
+        # department 필드로 정확히 제한한다.
+
         departments = ["마케팅부", "기획부", "인사부", "개발부", "영업부", "재무부"]
 
         for department in departments:
@@ -271,13 +284,28 @@ def search_bm25(question, permission_level, employee_id=None, size=5):
                 )
                 break
 
-    # OpenSearch에 검색 요청을 보낸다.
+        # =========================
+        # 3. 직원 이름 필터 추가
+        # =========================
+        # 현재 데이터에 employee_name 필드가 없기 때문에
+        # 임시로 embedding_text에 이름이 포함된 문서만 검색한다.
+
+        target_name = extract_employee_name(question)
+
+        if target_name:
+            query["query"]["bool"]["filter"].append(
+                {"match_phrase": {"embedding_text": target_name}}
+            )
+
+    # =========================
+    # 4. OpenSearch 검색 실행
+    # =========================
+
     response = client.search(
         index=indices,
         body=query,
     )
 
-    # 검색 결과 목록만 반환한다.
     return response["hits"]["hits"]
 
 

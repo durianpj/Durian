@@ -26,6 +26,7 @@ def build_rag_prompt(question: str, context: str) -> str:
         답변은 짧고 명확하게 작성합니다.
         가능하면 답변 마지막에 출처를 표시합니다.
         검색 결과만으로 답변이 불가능한 경우 추가 추론이나 가정은 하지 않습니다.
+        질문한 항목만 말합니다.
 
         [검색 결과]
         {context}
