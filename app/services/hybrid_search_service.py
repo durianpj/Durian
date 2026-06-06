@@ -33,6 +33,26 @@ ACCESSIBLE_INDICES = {
 }
 
 
+def get_search_indices(question, permission_level):
+    """
+    질문 내용과 권한 레벨에 따라 검색 대상 인덱스를 결정한다.
+    BM25와 벡터 검색이 같은 범위를 보도록 공통 함수로 관리한다.
+    """
+
+    indices = ACCESSIBLE_INDICES.get(permission_level, [])
+
+    if any(keyword in question for keyword in ["연봉", "급여", "월급", "계좌번호", "은행"]):
+        return [index for index in indices if "salary" in index]
+
+    if any(keyword in question for keyword in ["성과", "평가", "고과"]):
+        return [index for index in indices if "performance" in index]
+
+    if any(keyword in question for keyword in ["주소", "주민번호", "주민등록번호"]):
+        return [index for index in indices if "basic_3" in index]
+
+    return indices
+
+
 # =========================
 # OpenSearch 접속 설정
 # =========================
@@ -85,11 +105,26 @@ client = OpenSearch(
 # 같은 모델을 사용해야 벡터 차원이 맞다.
 MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
-# tokenizer: 문장을 모델이 이해할 수 있는 숫자 토큰으로 변환
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+tokenizer = None
+embedding_model = None
 
-# embedding_model: 토큰을 실제 벡터로 변환하는 모델
-embedding_model = AutoModel.from_pretrained(MODEL_NAME)
+
+def get_embedding_model():
+    """
+    벡터 검색이 실제로 필요할 때만 임베딩 모델을 로드한다.
+
+    앱 시작 시점이 아니라 하이브리드 검색 실행 시점에 모델을 로드한다.
+    """
+
+    global tokenizer, embedding_model
+
+    if tokenizer is None:
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+
+    if embedding_model is None:
+        embedding_model = AutoModel.from_pretrained(MODEL_NAME)
+
+    return tokenizer, embedding_model
 
 
 # =========================
@@ -174,6 +209,8 @@ def create_question_vector(question):
     transformers + torch 방식으로 직접 임베딩을 만든다.
     """
 
+    tokenizer, embedding_model = get_embedding_model()
+
     # 질문 문장을 토큰 형태로 변환한다.
     inputs = tokenizer(question, padding=True, truncation=True, return_tensors="pt")
 
@@ -250,18 +287,8 @@ def search_bm25(question, permission_level, employee_id=None, size=5):
     - 질문에 직원 이름이 있으면 embedding_text에서 이름을 match_phrase로 제한한다.
     """
 
-    # 권한 레벨에 따라 검색 가능한 인덱스만 가져온다.
-    indices = ACCESSIBLE_INDICES.get(permission_level, [])
-    # 질문 내용에 따라 검색할 인덱스를 좁힌다.
-    # 예: 연봉 질문이면 salary 인덱스만 검색한다.
-    if any(keyword in question for keyword  in ["연봉", "급여", "월급", "계좌번호", "은행"]):
-        indices = [index for index in indices if "salary" in index]
-
-    elif any(keyword in question for keyword in ["성과", "평가", "고과"]):
-        indices = [index for index in indices if "performance" in index]
-
-    elif any(keyword in question for keyword in ["주소", "주민번호", "주민등록번호"]):
-        indices = [index for index in indices if "basic_3" in index]
+    # 권한 레벨과 질문 내용에 따라 검색 가능한 인덱스만 가져온다.
+    indices = get_search_indices(question, permission_level)
 
     # 필터링 후 검색할 인덱스가 없으면 빈 결과 반환
     if not indices:
@@ -351,7 +378,7 @@ def search_bm25(question, permission_level, employee_id=None, size=5):
 # =========================
 
 
-def search_vector(question_vector, permission_level, employee_id=None, size=5):
+def search_vector(question, question_vector, permission_level, employee_id=None, size=5):
     """
     embedding_vector 필드를 대상으로 벡터 유사도 검색을 수행한다.
 
@@ -359,8 +386,8 @@ def search_vector(question_vector, permission_level, employee_id=None, size=5):
     의미가 비슷한 문서를 찾는 데 사용한다.
     """
 
-    # 권한 레벨에 따라 검색 가능한 인덱스만 가져온다.
-    indices = ACCESSIBLE_INDICES.get(permission_level, [])
+    # 권한 레벨과 질문 내용에 따라 검색 가능한 인덱스만 가져온다.
+    indices = get_search_indices(question, permission_level)
 
     if not indices:
         print("접근 가능한 인덱스가 없습니다.")
@@ -454,48 +481,15 @@ def merge_rrf(bm25_hits, vector_hits, k=60, size=5):
 # =========================
 
 
-# def search_hybrid(question, permission_level, employee_id=None, size=5):
-#     """
-#     BM25 검색과 벡터 검색을 각각 수행한 뒤,
-#     RRF 방식으로 결과를 병합한다.
-
-#     최종적으로 RAG에 사용할 검색 결과를 반환한다.
-#     """
-
-#     # 사용자 질문을 벡터로 변환한다.
-#     question_vector = create_question_vector(question)
-
-#     # 1. BM25 키워드 검색 실행
-#     bm25_hits = search_bm25(
-#         question=question,
-#         permission_level=permission_level,
-#         employee_id=employee_id,
-#         size=size,
-#     )
-
-#     # 2. 벡터 의미 검색 실행
-#     vector_hits = search_vector(
-#         question_vector=question_vector,
-#         permission_level=permission_level,
-#         employee_id=employee_id,
-#         size=size,
-#     )
-
-#     # 3. 두 검색 결과를 RRF 방식으로 병합
-#     hybrid_hits = merge_rrf(
-#         bm25_hits=bm25_hits,
-#         vector_hits=vector_hits,
-#         size=size,
-#     )
-
-#     return hybrid_hits
-
-
 def search_hybrid(question, permission_level, employee_id=None, size=5):
     """
-    임시 테스트용:
-    벡터 검색은 잠시 제외하고 BM25 검색만 확인한다.
+    BM25 검색과 벡터 검색을 각각 수행한 뒤,
+    RRF 방식으로 결과를 병합한다.
+
+    최종적으로 RAG에 사용할 검색 결과를 반환한다.
     """
+
+    question_vector = create_question_vector(question)
 
     bm25_hits = search_bm25(
         question=question,
@@ -504,4 +498,18 @@ def search_hybrid(question, permission_level, employee_id=None, size=5):
         size=size,
     )
 
-    return bm25_hits
+    vector_hits = search_vector(
+        question=question,
+        question_vector=question_vector,
+        permission_level=permission_level,
+        employee_id=employee_id,
+        size=size,
+    )
+
+    hybrid_hits = merge_rrf(
+        bm25_hits=bm25_hits,
+        vector_hits=vector_hits,
+        size=size,
+    )
+
+    return hybrid_hits
