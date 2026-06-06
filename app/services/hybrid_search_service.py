@@ -340,6 +340,36 @@ def get_user_permission_level(employee_id: str) -> int | None:
     return max(department_level, job_grade_level)
 
 
+def get_employee_basic_info(employee_id: str) -> dict | None:
+    """
+    사번 기준으로 기본 인사정보를 조회한다.
+    """
+
+    query = {
+        "query": {"bool": {"filter": [{"term": {"employee_id": employee_id}}]}},
+        "size": 1,
+    }
+
+    response = client.search(index=["hr_basic_1"], body=query)
+    hits = response["hits"]["hits"]
+
+    if not hits:
+        return None
+
+    hit = hits[0]
+    source = hit["_source"]
+
+    return {
+        "index": hit["_index"],
+        "_id": hit["_id"],
+        "employee_id": source.get("employee_id"),
+        "name": extract_employee_name_from_source(source),
+        "department": source.get("department"),
+        "position": source.get("position"),
+        "score": hit.get("_score"),
+    }
+
+
 def get_department_types() -> list[str]:
     """
     기본 인사 인덱스에서 부서 고유값 목록을 조회한다.

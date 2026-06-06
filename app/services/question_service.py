@@ -124,6 +124,19 @@ def is_phone_number_question(question: str) -> bool:
     return any(keyword in normalized for keyword in phone_keywords)
 
 
+def is_basic_info_question(question: str) -> bool:
+    """
+    기본정보 요약을 묻는 질문인지 판단한다.
+    """
+
+    if not question:
+        return False
+
+    normalized = question.replace(" ", "")
+
+    return "기본정보" in normalized
+
+
 def extract_employee_name(question: str) -> str | None:
     """
     질문에서 직원 이름으로 보이는 한글 이름을 추출한다.

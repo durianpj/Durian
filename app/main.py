@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from app.services.llm_service import generate_answer
 from app.services.question_service import (
+    is_basic_info_question,
     is_department_list_question,
     is_department_members_question,
     is_phone_number_question,
@@ -16,6 +17,7 @@ from app.services.hybrid_search_service import (
     build_context,
     extract_employee_name_from_source,
     extract_phone_number_from_source,
+    get_employee_basic_info,
     get_department_members,
     get_department_types,
     get_supervisors,
@@ -193,6 +195,43 @@ def rag_chat(
     # - 주소, 계좌번호, 징계: 3
 
     required_level = get_required_level(question)
+
+    if is_self_question(question) and is_basic_info_question(question):
+        basic_info = get_employee_basic_info(request.employee_id)
+
+        if basic_info:
+            answer = (
+                f"{basic_info['name']}님의 기본정보는 "
+                f"사원번호 {basic_info['employee_id']}, "
+                f"부서 {basic_info['department']}, "
+                f"직급 {basic_info['position']}입니다."
+            )
+            sources = [
+                {
+                    "index": basic_info["index"],
+                    "_id": basic_info["_id"],
+                    "employee_id": basic_info["employee_id"],
+                    "department": basic_info["department"],
+                    "position": basic_info["position"],
+                    "score": basic_info["score"],
+                }
+            ]
+        else:
+            answer = "조회된 데이터에서 확인할 수 없습니다."
+            sources = []
+
+        return {
+            "success": True,
+            "answer": answer,
+            "permission": {
+                "allowed": True,
+                "employee_id": request.employee_id,
+                "permission_level": permission_level,
+                "required_level": required_level,
+            },
+            "sources": sources,
+            "model_type": "rule-based",
+        }
 
     if is_department_list_question(question):
         departments = get_department_types()
