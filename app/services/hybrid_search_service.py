@@ -239,6 +239,15 @@ def search_bm25(question, permission_level, employee_id=None, size=5):
     # employee_id가 있으면 해당 사번 문서만 검색한다.
     if employee_id:
         query["query"]["bool"]["filter"].append({"term": {"employee_id": employee_id}})
+    # 질문에 부서명이 있으면 department 필터 추가
+    departments = ["마케팅부", "기획부", "인사부", "개발부", "영업부", "재무부"]
+
+    for department in departments:
+        if department in question:
+            query["query"]["bool"]["filter"].append(
+                {"term": {"department": department}}
+            )
+            break
 
     # OpenSearch에 검색 요청을 보낸다.
     response = client.search(
@@ -291,6 +300,8 @@ def search_vector(question_vector, permission_level, employee_id=None, size=5):
     # employee_id가 있으면 해당 사번 문서만 검색한다.
     if employee_id:
         query["query"]["bool"]["filter"].append({"term": {"employee_id": employee_id}})
+
+    
 
     # OpenSearch에 벡터 검색 요청을 보낸다.
     response = client.search(
@@ -356,18 +367,49 @@ def merge_rrf(bm25_hits, vector_hits, k=60, size=5):
 # =========================
 
 
+# def search_hybrid(question, permission_level, employee_id=None, size=5):
+#     """
+#     BM25 검색과 벡터 검색을 각각 수행한 뒤,
+#     RRF 방식으로 결과를 병합한다.
+
+#     최종적으로 RAG에 사용할 검색 결과를 반환한다.
+#     """
+
+#     # 사용자 질문을 벡터로 변환한다.
+#     question_vector = create_question_vector(question)
+
+#     # 1. BM25 키워드 검색 실행
+#     bm25_hits = search_bm25(
+#         question=question,
+#         permission_level=permission_level,
+#         employee_id=employee_id,
+#         size=size,
+#     )
+
+#     # 2. 벡터 의미 검색 실행
+#     vector_hits = search_vector(
+#         question_vector=question_vector,
+#         permission_level=permission_level,
+#         employee_id=employee_id,
+#         size=size,
+#     )
+
+#     # 3. 두 검색 결과를 RRF 방식으로 병합
+#     hybrid_hits = merge_rrf(
+#         bm25_hits=bm25_hits,
+#         vector_hits=vector_hits,
+#         size=size,
+#     )
+
+#     return hybrid_hits
+
+
 def search_hybrid(question, permission_level, employee_id=None, size=5):
     """
-    BM25 검색과 벡터 검색을 각각 수행한 뒤,
-    RRF 방식으로 결과를 병합한다.
-
-    최종적으로 RAG에 사용할 검색 결과를 반환한다.
+    임시 테스트용:
+    벡터 검색은 잠시 제외하고 BM25 검색만 확인한다.
     """
 
-    # 사용자 질문을 벡터로 변환한다.
-    question_vector = create_question_vector(question)
-
-    # 1. BM25 키워드 검색 실행
     bm25_hits = search_bm25(
         question=question,
         permission_level=permission_level,
@@ -375,19 +417,4 @@ def search_hybrid(question, permission_level, employee_id=None, size=5):
         size=size,
     )
 
-    # 2. 벡터 의미 검색 실행
-    vector_hits = search_vector(
-        question_vector=question_vector,
-        permission_level=permission_level,
-        employee_id=employee_id,
-        size=size,
-    )
-
-    # 3. 두 검색 결과를 RRF 방식으로 병합
-    hybrid_hits = merge_rrf(
-        bm25_hits=bm25_hits,
-        vector_hits=vector_hits,
-        size=size,
-    )
-
-    return hybrid_hits
+    return bm25_hits

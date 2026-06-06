@@ -141,15 +141,17 @@ def rag_chat(request: RagChatRequest):
     # 7. 사용자 권한보다 높은 정보 요청 시 차단
     if permission_level < required_level:
         return {
-            "question": request.question,
+            "success": False,
             "answer": "해당 정보에 접근할 권한이 없습니다.",
-            "employee_id": request.employee_id,
-            "permission_level": permission_level,
-            "required_level": required_level,
+            "permission": {
+                "allowed": False,
+                "employee_id": request.employee_id,
+                "permission_level": permission_level,
+                "required_level": required_level,
+            },
             "sources": [],
-            "model": "gemma3:4b",
+            "model_type": "gemma3:4b",
         }
-
     # 8. OpenSearch 하이브리드 검색 실행
     # 내부에서 BM25 검색 + 벡터 검색 + RRF 병합을 수행한다.
     search_hits = search_hybrid(
@@ -162,13 +164,16 @@ def rag_chat(request: RagChatRequest):
     # 9. 검색 결과가 없을 경우 처리
     if not search_hits:
         return {
-            "question": request.question,
+            "success": False,
             "answer": "관련 정보를 찾을 수 없습니다.",
-            "employee_id": request.employee_id,
-            "permission_level": permission_level,
-            "required_level": required_level,
+            "permission": {
+                "allowed": True,
+                "employee_id": request.employee_id,
+                "permission_level": permission_level,
+                "required_level": required_level,
+            },
             "sources": [],
-            "model": "gemma3:4b",
+            "model_type": "gemma3:4b",
         }
 
     # 10. 검색 결과를 LLM에 전달할 Context로 변환
@@ -184,17 +189,14 @@ def rag_chat(request: RagChatRequest):
     sources = []
 
     for hit in search_hits:
-        source = hit["_source"]
+        source = hit.get("_source", {})
 
         sources.append(
             {
                 "index": hit["_index"],
-                "doc_id": hit["_id"],
+                "_id": hit["_id"],
                 "employee_id": source.get("employee_id"),
-                "employee_name": source.get("employee_name"),
                 "department": source.get("department"),
-                "team": source.get("team"),
-                "job_grade": source.get("job_grade"),
                 "position": source.get("position"),
                 "score": hit.get("_score"),
             }
@@ -202,13 +204,16 @@ def rag_chat(request: RagChatRequest):
 
     # 13. 최종 응답 반환
     return {
-        "question": request.question,
+        "success": True,
         "answer": answer,
-        "employee_id": request.employee_id,
-        "permission_level": permission_level,
-        "required_level": required_level,
+        "permission": {
+            "allowed": True,
+            "employee_id": request.employee_id,
+            "permission_level": permission_level,
+            "required_level": required_level,
+        },
         "sources": sources,
-        "model": "gemma3:4b",
+        "model_type": "gemma3:4b",
     }
 
 
