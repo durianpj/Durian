@@ -118,8 +118,19 @@ def build_context(search_hits):
         # 검색과 LLM context에 사용할 텍스트
         embedding_text = source.get("embedding_text", "")
 
+        # 추가
+        employee_id = source.get("employee_id", "")
+        department = source.get("department", "")
+        position = source.get("position", "")
+
         # 출처를 함께 넣어야 나중에 어떤 문서를 보고 답했는지 알 수 있다.
-        context = f"[출처: {index_name} / {doc_id}]\n{embedding_text}"
+        context = f"""
+            [출처: {index_name} / {doc_id}]
+            사번: {employee_id}
+            부서: {department}
+            직급/직책: {position}
+            내용: {embedding_text}
+            """.strip()
 
         context_list.append(context)
 
