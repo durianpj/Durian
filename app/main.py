@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from app.services.llm_service import generate_answer
+from app.services.question_service import is_self_question
 from app.services.hybrid_search_service import (
     build_context,
     get_user_permission_level,
@@ -10,7 +11,10 @@ from app.services.hybrid_search_service import (
 )
 
 
+# =========================
 # FastAPI 앱 생성
+# =========================
+
 app = FastAPI(title="Durian HR RAG Chatbot")
 
 
@@ -96,49 +100,69 @@ def rag_chat(request: RagChatRequest):
     2. employee_id 기준으로 사용자 권한 레벨을 자동 계산한다.
     3. 질문 내용 기준으로 필요한 정보 레벨을 판단한다.
     4. 사용자 권한이 부족하면 차단한다.
-    5. OpenSearch에서 BM25 + 벡터 검색을 수행한다.
-    6. RRF 방식으로 병합된 검색 결과를 Context로 만든다.
-    7. Context와 질문을 gemma3:4b에 전달한다.
+    5. 본인 질문이면 employee_id로 검색 대상을 제한한다.
+    6. OpenSearch에서 BM25 + 벡터 검색을 수행한다.
+    7. RRF 방식으로 병합된 검색 결과를 Context로 만든다.
+    8. Context와 질문을 gemma3:4b에 전달한다.
+    9. 답변과 출처 데이터를 반환한다.
     """
 
+    # =========================
     # 1. 질문 미입력 예외 처리
+    # =========================
+
     if not request.question or not request.question.strip():
         raise HTTPException(
             status_code=400,
             detail="질문을 입력해주세요.",
         )
 
+    # =========================
     # 2. 사번 미입력 예외 처리
+    # =========================
+
     if not request.employee_id or not request.employee_id.strip():
         raise HTTPException(
             status_code=400,
             detail="employee_id를 입력해주세요.",
         )
 
-    # 3. employee_id 기준으로 권한 레벨 자동 계산
-    # department_level과 job_grade_level 중 더 높은 값이 permission_level이 된다.
+    # =========================
+    # 3. employee_id 기준 권한 레벨 계산
+    # =========================
+    # get_user_permission_level() 내부에서
+    # department_level과 job_grade_level 중 더 높은 값을 permission_level로 사용한다.
+
     permission_level = get_user_permission_level(request.employee_id)
 
-    # 4. 사번으로 사용자를 찾지 못한 경우
+    # 사번으로 사용자를 찾지 못한 경우
     if permission_level is None:
         raise HTTPException(
             status_code=404,
             detail="사용자 사번을 찾을 수 없습니다.",
         )
 
-    # 5. 계산된 권한 레벨이 유효한지 확인
+    # 계산된 권한 레벨이 1, 2, 3 중 하나인지 확인
     if permission_level not in [1, 2, 3]:
         raise HTTPException(
             status_code=400,
             detail="계산된 permission_level이 올바르지 않습니다.",
         )
 
-    # 6. 질문 내용 기준으로 필요한 권한 레벨 확인
-    # 예: 연봉, 급여, 성과 → 2레벨
-    # 예: 주소, 계좌번호, 징계 → 3레벨
+    # =========================
+    # 4. 질문 내용 기준 필요 권한 레벨 판단
+    # =========================
+    # 예:
+    # - 기본 정보: 1
+    # - 연봉, 성과, 평가: 2
+    # - 주소, 계좌번호, 징계: 3
+
     required_level = get_required_level(request.question)
 
-    # 7. 사용자 권한보다 높은 정보 요청 시 차단
+    # =========================
+    # 5. 권한 부족 시 차단
+    # =========================
+
     if permission_level < required_level:
         return {
             "success": False,
@@ -152,16 +176,41 @@ def rag_chat(request: RagChatRequest):
             "sources": [],
             "model_type": "gemma3:4b",
         }
-    # 8. OpenSearch 하이브리드 검색 실행
-    # 내부에서 BM25 검색 + 벡터 검색 + RRF 병합을 수행한다.
+
+    # =========================
+    # 6. 본인 정보 조회 여부 판단
+    # =========================
+    # "내 부서 알려줘", "나의 직급 알려줘" 같은 질문이면
+    # 요청한 employee_id로 검색 결과를 제한한다.
+    #
+    # 이렇게 하지 않으면 여러 사람 문서가 검색되어
+    # LLM 답변이 섞일 수 있다.
+
+    search_employee_id = None
+
+    if is_self_question(request.question):
+        search_employee_id = request.employee_id
+
+    # =========================
+    # 7. OpenSearch 하이브리드 검색 실행
+    # =========================
+    # search_hybrid() 내부에서
+    # BM25 검색 + 벡터 검색 + RRF 병합을 수행한다.
+    #
+    # search_employee_id가 None이면 전체 검색
+    # search_employee_id가 있으면 해당 사번만 검색
+
     search_hits = search_hybrid(
         question=request.question,
         permission_level=permission_level,
-        employee_id=None,
+        employee_id=search_employee_id,
         size=5,
     )
 
-    # 9. 검색 결과가 없을 경우 처리
+    # =========================
+    # 8. 검색 결과 없음 처리
+    # =========================
+
     if not search_hits:
         return {
             "success": False,
@@ -176,16 +225,26 @@ def rag_chat(request: RagChatRequest):
             "model_type": "gemma3:4b",
         }
 
-    # 10. 검색 결과를 LLM에 전달할 Context로 변환
+    # =========================
+    # 9. 검색 결과를 LLM Context로 변환
+    # =========================
+
     context = build_context(search_hits)
 
-    # 11. LLM 답변 생성
+    # =========================
+    # 10. gemma3:4b 답변 생성
+    # =========================
+
     answer = generate_answer(
         question=request.question,
         context=context,
     )
 
-    # 12. 응답에 포함할 출처 데이터 구성
+    # =========================
+    # 11. 응답에 포함할 출처 데이터 구성
+    # =========================
+    # 검색 결과의 OpenSearch 인덱스, 문서 ID, 사번, 부서, 직급/직책, 점수를 반환한다.
+
     sources = []
 
     for hit in search_hits:
@@ -202,7 +261,10 @@ def rag_chat(request: RagChatRequest):
             }
         )
 
-    # 13. 최종 응답 반환
+    # =========================
+    # 12. 최종 응답 반환
+    # =========================
+
     return {
         "success": True,
         "answer": answer,
@@ -225,7 +287,9 @@ def get_required_level(question: str) -> int:
     """
     질문에 포함된 키워드를 기준으로 필요한 권한 레벨을 간단히 판단한다.
 
-    실제 접근 제어는 OpenSearch 검색 대상 인덱스를 제한하는 방식으로 수행한다.
+    실제 접근 제어는 OpenSearch 검색 대상 인덱스 제한과
+    검색 필터를 통해 수행한다.
+
     이 함수는 민감 정보 요청을 사전에 차단하기 위한 보조 검증이다.
     """
 

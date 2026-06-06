@@ -234,31 +234,42 @@ def search_bm25(question, permission_level, employee_id=None, size=5):
         return []
 
     # OpenSearch Query DSL
-    query = {
-        "query": {
-            "bool": {
-                # must: 사용자의 질문 내용을 embedding_text에서 검색한다.
-                "must": [{"match": {"embedding_text": question}}],
-                # filter: 점수 계산과 상관없이 반드시 지켜야 하는 조건
-                # 예: 특정 사번만 조회
-                "filter": [],
-            }
-        },
-        "size": size,
-    }
-
-    # employee_id가 있으면 해당 사번 문서만 검색한다.
+    # employee_id가 있으면 본인/특정 사번 조회이므로
+    # embedding_text match를 강하게 걸지 않고 filter 중심으로 조회한다.
     if employee_id:
-        query["query"]["bool"]["filter"].append({"term": {"employee_id": employee_id}})
-    # 질문에 부서명이 있으면 department 필터 추가
-    departments = ["마케팅부", "기획부", "인사부", "개발부", "영업부", "재무부"]
+        query = {
+            "query": {
+                "bool": {
+                    "must": [{"match_all": {}}],
+                    "filter": [
+                        {"term": {"employee_id": employee_id}}
+                    ],
+                }
+            },
+            "size": size,
+        }
+    else:
+        query = {
+            "query": {
+                "bool": {
+                    "must": [{"match": {"embedding_text": question}}],
+                    "filter": [],
+                }
+            },
+            "size": size,
+        }
 
-    for department in departments:
-        if department in question:
-            query["query"]["bool"]["filter"].append(
-                {"term": {"department": department}}
-            )
-            break
+    # 질문에 부서명이 있으면 department 필터 추가
+# employee_id가 없을 때만 부서 필터 적용
+    if not employee_id:
+        departments = ["마케팅부", "기획부", "인사부", "개발부", "영업부", "재무부"]
+
+        for department in departments:
+            if department in question:
+                query["query"]["bool"]["filter"].append(
+                    {"term": {"department": department}}
+                )
+                break
 
     # OpenSearch에 검색 요청을 보낸다.
     response = client.search(
