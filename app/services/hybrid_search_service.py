@@ -221,7 +221,7 @@ def get_user_permission_level(employee_id: str) -> int | None:
     source = hits[0]["_source"]
 
     department_level = source.get("department_level", 1)
-    job_grade_level = source.get("job_grade_level", 1)
+    job_grade_level = source.get("job_grade_level", source.get("position_level", 1))
 
     return max(department_level, job_grade_level)
 
@@ -257,7 +257,7 @@ def search_bm25(question, permission_level, employee_id=None, size=5):
         [index for index in indices if "performance" in index]
     )
 
-    if any(keyword in question for keyword in ["주소", "주민번호", "주민등록번호", "주민"]):
+    if any(keyword in question for keyword in ["주소", "주민번호", "주민등록번호", "주민","이름"]):
         selected_indices.extend(
         [index for index in indices if "basic" in index]
     )
@@ -340,7 +340,7 @@ def search_bm25(question, permission_level, employee_id=None, size=5):
         index=indices,
         body=query,
     )
-
+    print(response["hits"]["hits"])
     return response["hits"]["hits"]
 
 
