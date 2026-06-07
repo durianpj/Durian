@@ -1,0 +1,4 @@
+python-dotenv
+opensearch-py
+sentence-transformers
+pandas
