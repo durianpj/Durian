@@ -224,6 +224,21 @@ def rag_chat(request: RagChatRequest):
         employee_id=search_employee_id,
         size=5,
     )
+
+    if not search_hits:
+        return {
+            "success": False,
+            "answer": "조회 가능한 정보가 없습니다.",
+            "permission": {
+                "allowed": True,
+                "employee_id": request.employee_id,
+                "permission_level": permission_level,
+                "required_level": required_level,
+            },
+            "sources": [],
+            "model_type": "gemma3:4b",
+        }
+
     # =========================
     # 9. 검색 결과를 LLM Context로 변환
     # =========================
