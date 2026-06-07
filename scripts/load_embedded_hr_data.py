@@ -84,20 +84,99 @@ def get_source_min_level(doc_type: str) -> int:
 
 
 def calculate_permission_level(doc: dict, doc_type: str) -> int:
-    department_level = to_int(doc.get("department_level"), 1)
-    position_level = to_int(doc.get("position_level"), 1)
-    source_min_level = get_source_min_level(doc_type)
+    text = doc.get("embedding_text", "")
 
-    permission_level = max(department_level, position_level, source_min_level)
+    if any(keyword in text for keyword in ["주민등록번호", "주민번호", "주소", "전화번호", "계좌번호", "징계"]):
+        return 3
 
     # 우리 프로젝트는 권한 1, 2, 3까지만 사용
-    if permission_level < 1:
-        permission_level = 1
+    if doc_type in ["salary", "performance"]:
+        return 2
 
-    if permission_level > 3:
-        permission_level = 3
+    return 1
 
-    return permission_level
+
+def make_index_doc(doc: dict, doc_type: str, permission_level: int, embedding_text: str) -> dict:
+    index_doc = dict(doc)
+    index_doc["department_level"] = to_int(doc.get("department_level"), 1)
+    index_doc["position_level"] = to_int(doc.get("position_level"), 1)
+    index_doc["doc_type"] = doc_type
+    index_doc["permission_level"] = permission_level
+    index_doc["embedding_text"] = embedding_text
+    return index_doc
+
+
+def build_public_basic_text(doc: dict) -> str:
+    return (
+        f"이름: {doc.get('employee_name', '')} "
+        f"부서: {doc.get('department', '')} "
+        f"직급: {doc.get('position', '')}"
+    ).strip()
+
+
+def build_level_text(doc_type: str, embedding_text: str) -> str:
+    if doc_type == "salary":
+        return embedding_text.split("급여은행:")[0].strip()
+
+    if doc_type == "performance":
+        return embedding_text.split("징계이력:")[0].strip()
+
+    return embedding_text
+
+
+def split_docs_by_permission(doc: dict, doc_type: str) -> list[tuple[int, str, dict]]:
+    embedding_text = doc.get("embedding_text", "")
+
+    if doc_type == "basic":
+        split_docs = [
+            (
+                1,
+                "basic_public",
+                make_index_doc(doc, doc_type, 1, build_public_basic_text(doc)),
+            )
+        ]
+
+        restricted_level = calculate_permission_level(doc, doc_type)
+        if restricted_level > 1:
+            split_docs.append(
+                (
+                    restricted_level,
+                    f"basic_level_{restricted_level}",
+                    make_index_doc(doc, doc_type, restricted_level, embedding_text),
+                )
+            )
+
+        return split_docs
+
+    permission_level = calculate_permission_level(doc, doc_type)
+    source_min_level = get_source_min_level(doc_type)
+
+    if permission_level > source_min_level:
+        return [
+            (
+                source_min_level,
+                f"{doc_type}_level_{source_min_level}",
+                make_index_doc(
+                    doc,
+                    doc_type,
+                    source_min_level,
+                    build_level_text(doc_type, embedding_text),
+                ),
+            ),
+            (
+                permission_level,
+                f"{doc_type}_level_{permission_level}",
+                make_index_doc(doc, doc_type, permission_level, embedding_text),
+            ),
+        ]
+
+    return [
+        (
+            permission_level,
+            f"{doc_type}_level_{permission_level}",
+            make_index_doc(doc, doc_type, permission_level, embedding_text),
+        )
+    ]
 
 
 def create_index_if_not_exists(index_name: str):
@@ -240,41 +319,30 @@ def load_one_file(file_path: Path, total_count: int, index_count: dict):
 
             source = doc.get("source", "")
             doc_type = source_to_doc_type(source)
-            permission_level = calculate_permission_level(doc, doc_type)
+            split_index_docs = split_docs_by_permission(doc, doc_type)
 
-            # 문자열 숫자를 정수로 변환해서 저장
-            doc["department_level"] = to_int(doc.get("department_level"), 1)
-            doc["position_level"] = to_int(doc.get("position_level"), 1)
+            for permission_level, doc_suffix, index_doc in split_index_docs:
+                index_name = f"hr_{doc_type}_{permission_level}"
+                doc_id = (
+                    f"{file_path.stem}_{doc['employee_id']}_"
+                    f"{doc_type}_{doc_suffix}_{line_no}"
+                )
 
-            # 없는 필드 추가
-            doc["doc_type"] = doc_type
-            doc["permission_level"] = permission_level
+                client.index(
+                    index=index_name,
+                    id=doc_id,
+                    body=index_doc,
+                )
 
-            index_name = f"hr_{doc_type}_{permission_level}"
+                count += 1
+                total_count += 1
+                index_count[index_name] = index_count.get(index_name, 0) + 1
 
-        
+                if total_count % 1000 == 0:
+                    print(f"loaded {total_count} docs")
 
-            # 파일명까지 넣어서 ID 충돌 방지
-            doc_id = f"{file_path.stem}_{doc['employee_id']}_{doc_type}_{line_no}"
-
-            client.index(
-                index=index_name,
-                id=doc_id,
-                body=doc,
-            )
-
-            count += 1
-            total_count += 1
-            index_count[index_name] = index_count.get(index_name, 0) + 1
-
-            print(
-                f"\r적재중... {total_count}건",
-                end="",
-                flush=True
-            )
-
-            if MAX_COUNT is not None and total_count >= MAX_COUNT:
-                return count, skip_count, total_count
+                if MAX_COUNT is not None and total_count >= MAX_COUNT:
+                    return count, skip_count, total_count
 
     return count, skip_count, total_count
 
