@@ -18,12 +18,8 @@ def is_self_question(question: str) -> bool:
     - 나는 어느 부서야?
     """
 
-    # 질문이 비어 있으면 본인 질문이 아님
-    if not question:
-        return False
-
     # 본인 조회로 판단할 키워드 목록
-    self_keywords = ["내", "나의", "본인", "나는", "난"]
+    self_keywords = ["내", "나의", "본인", "나는", "난", "제", "저의","내꺼","우리"]
 
     # 질문 안에 본인 조회 키워드가 하나라도 있으면 True 반환
     for keyword in self_keywords:

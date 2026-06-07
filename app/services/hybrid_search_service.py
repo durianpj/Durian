@@ -137,13 +137,13 @@ def build_context(search_hits):
 
         # 출처를 함께 넣어야 나중에 어떤 문서를 보고 답했는지 알 수 있다.
         context = f"""
-[출처: {index_name} / {doc_id}]
-문서유형: {doc_type}
-사번: {employee_id}
-부서: {department}
-직급/직책: {position}
-내용: {embedding_text}
-""".strip()
+                    [출처: {index_name} / {doc_id}]
+                    문서유형: {doc_type}
+                    사번: {employee_id}
+                    부서: {department}
+                    직급/직책: {position}
+                    내용: {embedding_text}
+                    """.strip()
 
         context_list.append(context)
 
@@ -212,7 +212,7 @@ def get_user_permission_level(employee_id: str) -> int | None:
         index=["hr_basic_1", "hr_basic_2", "hr_basic_3"],
         body=query,
     )
-
+    
     hits = response["hits"]["hits"]
 
     if not hits:
@@ -243,16 +243,29 @@ def search_bm25(question, permission_level, employee_id=None, size=5):
 
     # 권한 레벨에 따라 검색 가능한 인덱스만 가져온다.
     indices = ACCESSIBLE_INDICES.get(permission_level, [])
+
+    selected_indices = []
     # 질문 내용에 따라 검색할 인덱스를 좁힌다.
     # 예: 연봉 질문이면 salary 인덱스만 검색한다.
-    if any(keyword in question for keyword in ["연봉", "급여", "월급"]):
-        indices = [index for index in indices if "salary" in index]
+    if any(keyword in question for keyword in ["연봉", "급여", "월급", "계좌번호"]):
+        selected_indices.extend(
+        [index for index in indices if "salary" in index]
+    )
 
-    elif any(keyword in question for keyword in ["성과", "평가", "고과"]):
-        indices = [index for index in indices if "performance" in index]
+    if any(keyword in question for keyword in ["성과", "평가", "고과", "징계", "불이익", "인사조치"]):
+        selected_indices.extend(
+        [index for index in indices if "performance" in index]
+    )
 
-    elif any(keyword in question for keyword in ["주소", "주민번호", "주민등록번호", "계좌번호"]):
-        indices = [index for index in indices if "basic_3" in index or "salary" in index]
+    if any(keyword in question for keyword in ["주소", "주민번호", "주민등록번호", "주민"]):
+        selected_indices.extend(
+        [index for index in indices if "basic" in index]
+    )
+        
+    # selected_indices.extend(함수호출(question))
+
+    if selected_indices:
+        indices = list(set(selected_indices))
 
     # 필터링 후 검색할 인덱스가 없으면 빈 결과 반환
     if not indices:

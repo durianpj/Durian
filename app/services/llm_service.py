@@ -29,6 +29,7 @@ def build_rag_prompt(question: str, context: str) -> str:
         질문한 항목만 말합니다.
         부서 질문이면 "OO님의 부서는 OO입니다." 형식으로 답변하세요.
         직급 질문이면 "OO님의 직급은 OO입니다." 형식으로 답변하세요.
+        00님 할 때는 질문한 사원의 이름을 넣어주세요.
 
         [검색 결과]
         {context}
