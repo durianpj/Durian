@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from app.services.llm_service import generate_answer
 from app.services.question_service import (
+    extract_employee_name,
     is_all_info_question,
     is_basic_info_question,
     is_department_list_question,
@@ -28,6 +29,30 @@ from app.services.hybrid_search_service import (
 from app.services.session_service import resolve_question_with_session
 
 SESSION_COOKIE_NAME = "durian_session_id"
+
+
+def has_explicit_search_target(question: str) -> bool:
+    """
+    질문 안에 조회 대상이 명확하게 들어있는지 판단한다.
+
+    대상이 있다는 뜻:
+    - 특정 직원 이름이 있음: "김민수 연봉 알려줘"
+    - 특정 부서명이 있음: "인사부 직원 알려줘"
+
+    대상이 없다는 뜻:
+    - "연봉 알려줘"
+    - "부서 알려줘"
+    - "전화번호 알려줘"
+
+    대상이 없으면 request.employee_id 기준의 본인 조회로 처리한다.
+    """
+
+    if extract_employee_name(question):
+        return True
+
+    departments = ["마케팅부", "기획부", "인사부", "개발부", "영업부", "재무부"]
+
+    return any(department in question for department in departments)
 
 
 # =========================
@@ -313,8 +338,14 @@ def rag_chat(
     # =========================
 
     # 7. 본인 질문 여부 판단
-    # "내 연봉", "나의 주소"처럼 본인 데이터 조회면 본인 조회로 본다.
+    # "내 연봉", "나의 주소"처럼 본인 표현이 있으면 본인 조회로 본다.
     is_self = is_self_question(question)
+
+    # 질문에 특정 사람 이름이나 부서명이 없으면 요청자의 employee_id 기준으로 조회한다.
+    # 예: "연봉 알려줘", "부서 알려줘", "전화번호 알려줘"
+    # → 대상이 없으므로 request.employee_id 본인 정보 조회로 처리한다.
+    if not is_self and not has_explicit_search_target(question):
+        is_self = True
 
     if is_self and is_supervisor_question(question):
         supervisors = get_supervisors(request.employee_id)

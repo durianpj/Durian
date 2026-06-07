@@ -46,6 +46,21 @@ POSITION_RANK = {
     "사장": 10,
 }
 
+# 현재 정제 데이터에는 department_level, job_grade_level 필드가 없을 수 있다.
+# 그래서 position(직급)을 기준으로 챗봇 권한 레벨 1~3을 계산한다.
+POSITION_PERMISSION_LEVEL = {
+    "사원": 1,
+    "대리": 1,
+    "과장": 2,
+    "차장": 2,
+    "부장": 3,
+    "이사": 3,
+    "상무": 3,
+    "전무": 3,
+    "부사장": 3,
+    "사장": 3,
+}
+
 DEPARTMENTS = ["마케팅부", "기획부", "인사부", "개발부", "영업부", "재무부"]
 
 
@@ -317,7 +332,10 @@ def get_user_permission_level(employee_id: str) -> int | None:
     """
     사용자 사번으로 권한 레벨을 자동 계산한다.
 
-    department_level과 job_grade_level 중 더 높은 값을 permission_level로 사용한다.
+    1순위: 문서에 department_level/job_grade_level 필드가 있으면 그 값을 사용한다.
+    2순위: 현재 정제 데이터처럼 level 필드가 없으면 position(직급)을 기준으로 계산한다.
+
+    권한 레벨은 챗봇 정책상 1, 2, 3 중 하나만 반환한다.
     """
 
     query = {
@@ -337,14 +355,20 @@ def get_user_permission_level(employee_id: str) -> int | None:
 
     source = hits[0]["_source"]
 
-    department_level = source.get("department_level", source.get("부서레벨", 1))
-    job_grade_level = source.get("job_grade_level", source.get("직급레벨", 1))
+    department_level = source.get("department_level") or source.get("부서레벨")
+    job_grade_level = source.get("job_grade_level") or source.get("직급레벨")
 
-    department_level = int(department_level)
-    job_grade_level = int(job_grade_level)
+    # level 필드가 있는 데이터라면 기존 방식대로 둘 중 더 높은 값을 사용한다.
+    if department_level is not None or job_grade_level is not None:
+        department_level = int(department_level or 1)
+        job_grade_level = int(job_grade_level or 1)
+        permission_level = max(department_level, job_grade_level)
+        return min(max(permission_level, 1), 3)
 
-    return max(department_level, job_grade_level)
+    # 현재 정제 데이터에는 position 필드만 있으므로 직급 기준으로 권한을 계산한다.
+    position = source.get("position") or source.get("job_grade") or source.get("직급")
 
+    return POSITION_PERMISSION_LEVEL.get(position, 1)
 
 def get_employee_basic_info(employee_id: str) -> dict | None:
     """
@@ -665,6 +689,13 @@ def search_vector(question, question_vector, permission_level, employee_id=None,
             }
         },
     }
+
+    # 본인 조회 또는 특정 사번 조회라면 벡터 검색도 반드시 employee_id로 제한한다.
+    # 이 필터가 없으면 "내 연봉" 질문에서 다른 사람 문서가 섞일 수 있다.
+    if employee_id:
+        query["query"]["bool"]["filter"].append(
+            {"term": {"employee_id": employee_id}}
+        )
 
     # OpenSearch에 벡터 검색 요청을 보낸다.
     response = client.search(

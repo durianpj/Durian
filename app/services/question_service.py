@@ -119,7 +119,7 @@ def is_phone_number_question(question: str) -> bool:
     if "사원번호" in normalized or "계좌번호" in normalized:
         return False
 
-    phone_keywords = ["전화번호", "연락처", "휴대폰", "번호"]
+    phone_keywords = ["전화번호", "연락처", "휴대폰", "핸드폰", "휴대전화"]
 
     return any(keyword in normalized for keyword in phone_keywords)
 
@@ -239,3 +239,40 @@ def extract_employee_name(question: str) -> str | None:
         return match.group()
 
     return None
+
+
+def is_followup_question(question: str) -> bool:
+    """
+    이전에 조회했던 사람을 이어서 묻는 후속 질문인지 판단한다.
+
+    예:
+    - 그 사람 연봉 알려줘
+    - 그분 부서 알려줘
+    - 방금 사람 전화번호 알려줘
+
+    반대로 아래 질문은 후속 질문이 아니다.
+    - 이름 알려줘
+    - 연봉 알려줘
+    - 부서 알려줘
+
+    이런 질문은 대상이 없으므로 employee_id 기준 본인 조회로 처리해야 한다.
+    """
+
+    if not question:
+        return False
+
+    normalized = question.replace(" ", "")
+
+    followup_keywords = [
+        "그사람",
+        "그분",
+        "그직원",
+        "방금사람",
+        "방금직원",
+        "아까사람",
+        "아까직원",
+        "해당직원",
+        "그럼그사람",
+    ]
+
+    return any(keyword in normalized for keyword in followup_keywords)
