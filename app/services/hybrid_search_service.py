@@ -252,6 +252,8 @@ def get_user_permission_level(employee_id: str) -> int | None:
     department_level과 job_grade_level 중 더 높은 값을 permission_level로 사용한다.
     """
 
+    employee_id = employee_id.strip().upper()
+
     query = {
         "query": {"bool": {"filter": [{"term": {"employee_id": employee_id}}]}},
         "size": 1,
@@ -533,6 +535,9 @@ def search_hybrid(question, permission_level, employee_id=None, size=5):
 
     최종적으로 RAG에 사용할 검색 결과를 반환한다.
     """
+
+    if employee_id:
+        employee_id = employee_id.strip().upper()
 
     # 사용자 질문을 벡터로 변환한다.
     question_vector = create_question_vector(question)

@@ -117,6 +117,7 @@ def rag_chat(request: RagChatRequest):
             detail="질문을 입력해주세요.",
         )
 
+
     # =========================
     # 2. 사번 미입력 예외 처리
     # =========================
@@ -126,6 +127,8 @@ def rag_chat(request: RagChatRequest):
             status_code=400,
             detail="employee_id를 입력해주세요.",
         )
+    # employee_id는 대소문자와 공백 차이를 없애기 위해 대문자로 통일한다.
+    employee_id = request.employee_id.strip().upper()
 
     # =========================
     # 3. employee_id 기준 권한 레벨 계산
@@ -133,7 +136,7 @@ def rag_chat(request: RagChatRequest):
     # get_user_permission_level() 내부에서
     # department_level과 job_grade_level 중 더 높은 값을 permission_level로 사용한다.
 
-    permission_level = get_user_permission_level(request.employee_id)
+    permission_level = get_user_permission_level(employee_id)
 
     # 사번으로 사용자를 찾지 못한 경우
     if permission_level is None:
@@ -175,7 +178,7 @@ def rag_chat(request: RagChatRequest):
             "answer": "해당 정보에 접근할 권한이 없습니다.",
             "permission": {
                 "allowed": False,
-                "employee_id": request.employee_id,
+                "employee_id": employee_id,
                 "permission_level": permission_level,
                 "required_level": required_level,
             },
@@ -192,7 +195,7 @@ def rag_chat(request: RagChatRequest):
     search_employee_id = None
 
     if is_self:
-        search_employee_id = request.employee_id
+        search_employee_id = employee_id
 
 
     # =========================
@@ -231,7 +234,7 @@ def rag_chat(request: RagChatRequest):
             "answer": "조회 가능한 정보가 없습니다.",
             "permission": {
                 "allowed": True,
-                "employee_id": request.employee_id,
+                "employee_id": employee_id,
                 "permission_level": permission_level,
                 "required_level": required_level,
             },
@@ -284,7 +287,7 @@ def rag_chat(request: RagChatRequest):
         "answer": answer,
         "permission": {
             "allowed": True,
-            "employee_id": request.employee_id,
+            "employee_id": employee_id,
             "permission_level": permission_level,
             "required_level": required_level,
         },
