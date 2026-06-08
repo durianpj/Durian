@@ -31,7 +31,54 @@ ACCESSIBLE_INDICES = {
         "hr_salary_3",
     ],
 }
-
+DOC_TYPE_KEYWORDS = {
+    "salary": [
+        "연봉",
+        "급여",
+        "월급",
+        "보상",
+        "보수",
+        "수당",
+        "실수령",
+        "계좌번호",
+        "계좌",
+        "은행",
+    ],
+    "performance": [
+        "성과",
+        "평가",
+        "고과",
+        "점수",
+        "자격증",
+        "토익",
+        "TOEIC",
+        "수상",
+        "징계",
+        "불이익",
+        "인사조치",
+    ],
+    "basic": [
+        "주소",
+        "거주지",
+        "사는 곳",
+        "사는곳",
+        "주민번호",
+        "주민등록번호",
+        "전화번호",
+        "연락처",
+        "휴대폰",
+        "핸드폰",
+        "이름",
+        "부서",
+        "팀",
+        "직급",
+        "직책",
+        "입사일",
+        "이메일",
+        "사번",
+        "사원번호",
+    ],
+}
 
 # =========================
 # OpenSearch 접속 설정
@@ -225,13 +272,63 @@ def get_user_permission_level(employee_id: str) -> int | None:
 
     return max(department_level, job_grade_level)
 
+# =========================
+# 질문 기반 검색 인덱스 선택 함수
+# =========================
+
+
+def get_doc_types_by_keywords(question: str) -> list[str]:
+    """
+    질문에 포함된 키워드를 기준으로 검색할 문서 유형을 판단한다.
+
+    예:
+    - 연봉, 급여 → salary
+    - 성과, 평가 → performance
+    - 이름, 부서, 직급 → basic
+    """
+
+    selected_doc_types = []
+
+    for doc_type, keywords in DOC_TYPE_KEYWORDS.items():
+        if any(keyword in question for keyword in keywords):
+            selected_doc_types.append(doc_type)
+
+    return selected_doc_types
+
+
+def select_search_indices(question: str, permission_level: int) -> list[str]:
+    """
+    질문 내용과 권한 레벨을 기준으로 검색 대상 인덱스를 선택한다.
+
+    권한 레벨로 먼저 접근 가능한 인덱스를 제한하고,
+    그 안에서 질문 유형에 맞는 인덱스만 고른다.
+    """
+
+    indices = ACCESSIBLE_INDICES.get(permission_level, [])
+
+    if not indices:
+        return []
+
+    selected_doc_types = get_doc_types_by_keywords(question)
+
+    # 질문 유형을 못 잡으면 접근 가능한 전체 인덱스를 검색한다.
+    if not selected_doc_types:
+        return indices
+
+    selected_indices = [
+        index
+        for index in indices
+        if any(doc_type in index for doc_type in selected_doc_types)
+    ]
+
+    return selected_indices or indices
 
 # =========================
 # BM25 검색 함수
 # =========================
 
 
-def search_bm25(question, permission_level, employee_id=None, size=5):
+def search_bm25(question, permission_level, employee_id=None, size=5, indices=None):
     """
     embedding_text 필드를 대상으로 BM25 기반 키워드 검색을 수행한다.
 
@@ -240,34 +337,10 @@ def search_bm25(question, permission_level, employee_id=None, size=5):
     - 질문에 부서명이 있으면 department 필터를 추가한다.
     - 질문에 직원 이름이 있으면 embedding_text에서 이름을 match_phrase로 제한한다.
     """
+    # 권한 레벨과 질문 의미에 따라 검색 가능한 인덱스만 가져온다.
+    indices = indices or select_search_indices(question, permission_level)
 
-    # 권한 레벨에 따라 검색 가능한 인덱스만 가져온다.
-    indices = ACCESSIBLE_INDICES.get(permission_level, [])
-
-    selected_indices = []
-    # 질문 내용에 따라 검색할 인덱스를 좁힌다.
-    # 예: 연봉 질문이면 salary 인덱스만 검색한다.
-    if any(keyword in question for keyword in ["연봉", "급여", "월급", "계좌번호"]):
-        selected_indices.extend(
-        [index for index in indices if "salary" in index]
-    )
-
-    if any(keyword in question for keyword in ["성과", "평가", "고과", "징계", "불이익", "인사조치"]):
-        selected_indices.extend(
-        [index for index in indices if "performance" in index]
-    )
-
-    if any(keyword in question for keyword in ["주소", "주민번호", "주민등록번호", "주민","이름"]):
-        selected_indices.extend(
-        [index for index in indices if "basic" in index]
-    )
-        
-    # selected_indices.extend(함수호출(question))
-
-    if selected_indices:
-        indices = list(set(selected_indices))
-
-    # 필터링 후 검색할 인덱스가 없으면 빈 결과 반환
+    # 검색할 인덱스가 없으면 빈 결과 반환
     if not indices:
         print("접근 가능한 인덱스가 없습니다.")
         return []
@@ -348,7 +421,7 @@ def search_bm25(question, permission_level, employee_id=None, size=5):
 # =========================
 
 
-def search_vector(question_vector, permission_level, employee_id=None, size=5):
+def search_vector(question, question_vector, permission_level, employee_id=None, size=5, indices=None):
     """
     embedding_vector 필드를 대상으로 벡터 유사도 검색을 수행한다.
 
@@ -356,8 +429,8 @@ def search_vector(question_vector, permission_level, employee_id=None, size=5):
     의미가 비슷한 문서를 찾는 데 사용한다.
     """
 
-    # 권한 레벨에 따라 검색 가능한 인덱스만 가져온다.
-    indices = ACCESSIBLE_INDICES.get(permission_level, [])
+    # 권한 레벨과 질문 내용에 따라 검색 가능한 인덱스를 선택한다.
+    indices = indices or select_search_indices(question, permission_level)
 
     if not indices:
         print("접근 가능한 인덱스가 없습니다.")
@@ -462,20 +535,26 @@ def search_hybrid(question, permission_level, employee_id=None, size=5):
     # 사용자 질문을 벡터로 변환한다.
     question_vector = create_question_vector(question)
 
+    # BM25와 벡터 검색이 같은 인덱스를 보도록 검색 대상 인덱스를 먼저 선택한다.
+    indices = select_search_indices(question, permission_level)
+
     # 1. BM25 키워드 검색 실행
     bm25_hits = search_bm25(
         question=question,
         permission_level=permission_level,
         employee_id=employee_id,
         size=size,
+        indices=indices,
     )
 
     # 2. 벡터 의미 검색 실행
     vector_hits = search_vector(
+        question=question,
         question_vector=question_vector,
         permission_level=permission_level,
         employee_id=employee_id,
         size=size,
+        indices=indices,
     )
 
     # 3. 두 검색 결과를 RRF 방식으로 병합
