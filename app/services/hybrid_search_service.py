@@ -172,6 +172,7 @@ def build_context(search_hits):
         employee_id = source.get("employee_id", "")
         department = source.get("department", "")
         position = source.get("position", "")
+        employee_name = source.get("employee_name", "")
 
         # 인덱스명 기준으로 문서 유형 표시
         # 기존 데이터 구조는 바꾸지 않고, LLM에게 설명만 추가한다.
@@ -187,6 +188,7 @@ def build_context(search_hits):
                     [출처: {index_name} / {doc_id}]
                     문서유형: {doc_type}
                     사번: {employee_id}
+                    이름: {employee_name}
                     부서: {department}
                     직급/직책: {position}
                     내용: {embedding_text}
