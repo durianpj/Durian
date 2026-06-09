@@ -3,11 +3,21 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from app.services.llm_service import generate_answer
-from app.services.question_service import is_self_question
+
+from app.services.question_service import (
+    is_self_question,
+    classify_org_question,
+    extract_department_or_team,
+)
+
 from app.services.hybrid_search_service import (
     build_context,
     get_user_permission_level,
     search_hybrid,
+    get_department_list,
+    search_employees_by_department_or_team,
+    format_employee_list_answer,
+    make_sources,
 )
 
 
@@ -163,15 +173,15 @@ def rag_chat(request: RagChatRequest):
     required_level = get_required_level(request.question)
 
     # =========================
-    # 5. 권한 부족 시 차단
+    # 5. 본인 질문 여부 판단
     # =========================
 
-    # 7. 본인 질문 여부 판단
-    # "내 연봉", "나의 주소"처럼 본인 데이터 조회면 본인 조회로 본다.
     is_self = is_self_question(request.question)
 
-    # 8. 사용자 권한보다 높은 정보 요청 시 차단
-    # 단, 본인 정보 조회는 본인이 조회 가능하도록 허용한다.
+    # =========================
+    # 6. 권한 부족 시 차단
+    # =========================
+
     if not is_self and permission_level < required_level:
         return {
             "success": False,
@@ -187,10 +197,8 @@ def rag_chat(request: RagChatRequest):
         }
 
     # =========================
-    # 6. 본인 정보 조회 여부 판단
+    # 7. 검색 대상 employee_id 결정
     # =========================
-    # "내 부서 알려줘", "내 연봉 알려줘" 같은 질문이면
-    # 요청한 employee_id로 검색 결과를 제한한다.
 
     search_employee_id = None
 
@@ -199,7 +207,7 @@ def rag_chat(request: RagChatRequest):
 
 
     # =========================
-    # 7. 검색에 사용할 권한 레벨 결정
+    # 8. 검색에 사용할 권한 레벨 결정
     # =========================
     # 기본적으로는 요청자의 permission_level을 사용한다.
     # 단, 본인 조회인 경우에는 본인 데이터 조회를 허용하기 위해
@@ -216,9 +224,113 @@ def rag_chat(request: RagChatRequest):
     if is_self:
         search_permission_level = max(permission_level, required_level)
 
+    # =========================
+    # 9. 조직/부서/팀/직책 질문 직접 처리
+    # =========================
+    # "내 부서 알려줘" 같은 본인 질문은 기존 RAG 검색으로 보낸다.
+    # "부서 목록", "마케팅부 직원", "개발팀 직원", "팀장 누구야" 같은 조직 질문만 직접 처리한다.
+
+    org_question_type = None
+
+    if not is_self:
+        org_question_type = classify_org_question(request.question)
 
     # =========================
-    # 8. OpenSearch 하이브리드 검색 실행
+    # 9-1. 부서 목록 질문 처리
+    # =========================
+
+    if org_question_type == "department_list":
+        departments = get_department_list(search_permission_level)
+
+        if not departments:
+            return {
+                "success": False,
+                "answer": "조회 가능한 부서 목록이 없습니다.",
+                "permission": {
+                    "allowed": True,
+                    "employee_id": employee_id,
+                    "permission_level": permission_level,
+                    "required_level": required_level,
+                },
+                "sources": [],
+                "model_type": "direct-search",
+            }
+
+        return {
+            "success": True,
+            "answer": "조회 가능한 부서 목록은 다음과 같습니다: " + ", ".join(departments),
+            "permission": {
+                "allowed": True,
+                "employee_id": employee_id,
+                "permission_level": permission_level,
+                "required_level": required_level,
+            },
+            "sources": [],
+            "model_type": "direct-search",
+        }
+
+    # =========================
+    # 9-2. 특정 부서/팀 직원 조회
+    # =========================
+
+    if org_question_type == "department_employee_search":
+        department_or_team = extract_department_or_team(request.question)
+
+        if not department_or_team:
+            return {
+                "success": False,
+                "answer": "어느 부서 또는 팀의 직원을 조회할지 다시 입력해 주세요. 예: 마케팅부 직원 알려줘",
+                "permission": {
+                    "allowed": True,
+                    "employee_id": employee_id,
+                    "permission_level": permission_level,
+                    "required_level": required_level,
+                },
+                "sources": [],
+                "model_type": "direct-search",
+            }
+
+        search_hits = search_employees_by_department_or_team(
+            department_or_team=department_or_team,
+            permission_level=search_permission_level,
+            size=20,
+        )
+
+        return {
+            "success": bool(search_hits),
+            "answer": format_employee_list_answer(search_hits),
+            "permission": {
+                "allowed": True,
+                "employee_id": employee_id,
+                "permission_level": permission_level,
+                "required_level": required_level,
+            },
+            "sources": make_sources(search_hits),
+            "model_type": "direct-search",
+        }
+
+    # =========================
+    # 9-3. 팀장/상사 질문 처리
+    # =========================
+    # 현재 데이터에는 팀장 여부를 판단할 수 있는 필드가 없다.
+    # 부장/과장을 팀장으로 추측하지 않는다.
+
+    if org_question_type == "manager_search":
+        return {
+            "success": False,
+            "answer": "현재 데이터에는 팀장 여부를 판단할 수 있는 필드가 없습니다. 부서, 팀, 직급 정보는 조회할 수 있지만 팀장 여부는 확인할 수 없습니다.",
+            "permission": {
+                "allowed": True,
+                "employee_id": employee_id,
+                "permission_level": permission_level,
+                "required_level": required_level,
+            },
+            "sources": [],
+            "model_type": "direct-search",
+        }
+
+    # =========================
+    # 10. 일반 RAG 검색 실행
     # =========================
 
     search_hits = search_hybrid(
@@ -243,13 +355,13 @@ def rag_chat(request: RagChatRequest):
         }
 
     # =========================
-    # 9. 검색 결과를 LLM Context로 변환
+    # 11. 검색 결과를 LLM Context로 변환
     # =========================
 
     context = build_context(search_hits)
 
     # =========================
-    # 10. gemma3:4b 답변 생성
+    # 12. gemma3:4b 답변 생성
     # =========================
 
     answer = generate_answer(
@@ -258,9 +370,8 @@ def rag_chat(request: RagChatRequest):
     )
 
     # =========================
-    # 11. 응답에 포함할 출처 데이터 구성
+    # 13. 응답에 포함할 출처 데이터 구성
     # =========================
-    # 검색 결과의 OpenSearch 인덱스, 문서 ID, 사번, 부서, 직급/직책, 점수를 반환한다.
 
     sources = []
 
@@ -272,14 +383,16 @@ def rag_chat(request: RagChatRequest):
                 "index": hit["_index"],
                 "_id": hit["_id"],
                 "employee_id": source.get("employee_id"),
+                "employee_name": source.get("employee_name"),
                 "department": source.get("department"),
                 "position": source.get("position"),
+                "job_grade": source.get("job_grade"),
                 "score": hit.get("_score"),
             }
         )
 
     # =========================
-    # 12. 최종 응답 반환
+    # 14. 최종 응답 반환
     # =========================
 
     return {

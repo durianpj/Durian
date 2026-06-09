@@ -6,6 +6,7 @@ import torch
 
 from app.services.question_service import extract_employee_name
 
+
 # =========================
 # 권한별 접근 가능 인덱스 설정
 # =========================
@@ -31,6 +32,8 @@ ACCESSIBLE_INDICES = {
         "hr_salary_3",
     ],
 }
+
+
 DOC_TYPE_KEYWORDS = {
     "salary": [
         "연봉",
@@ -79,6 +82,7 @@ DOC_TYPE_KEYWORDS = {
         "사원번호",
     ],
 }
+
 
 # =========================
 # OpenSearch 접속 설정
@@ -143,7 +147,6 @@ embedding_model = AutoModel.from_pretrained(MODEL_NAME)
 # LLM 전달용 Context 생성 함수
 # =========================
 
-
 def build_context(search_hits):
     """
     OpenSearch 검색 결과를 LLM에 전달할 context 문자열로 변환한다.
@@ -170,9 +173,10 @@ def build_context(search_hits):
 
         # 공통 메타데이터
         employee_id = source.get("employee_id", "")
+        employee_name = source.get("employee_name", "")
         department = source.get("department", "")
         position = source.get("position", "")
-        employee_name = source.get("employee_name", "")
+        job_grade = source.get("job_grade", "")
 
         # 인덱스명 기준으로 문서 유형 표시
         # 기존 데이터 구조는 바꾸지 않고, LLM에게 설명만 추가한다.
@@ -185,14 +189,15 @@ def build_context(search_hits):
 
         # 출처를 함께 넣어야 나중에 어떤 문서를 보고 답했는지 알 수 있다.
         context = f"""
-                    [출처: {index_name} / {doc_id}]
-                    문서유형: {doc_type}
-                    사번: {employee_id}
-                    이름: {employee_name}
-                    부서: {department}
-                    직급/직책: {position}
-                    내용: {embedding_text}
-                    """.strip()
+        [출처: {index_name} / {doc_id}]
+        문서유형: {doc_type}
+        사번: {employee_id}
+        이름: {employee_name}
+        부서: {department}
+        팀: {position}
+        직급: {job_grade}
+        내용: {embedding_text}
+        """.strip()
 
         context_list.append(context)
 
@@ -204,14 +209,13 @@ def build_context(search_hits):
 # 질문 임베딩 생성 함수
 # =========================
 
-
 def create_question_vector(question):
     """
     사용자 질문을 벡터 검색에 사용할 임베딩 벡터로 변환한다.
 
     원래 sentence_transformers를 쓰면 더 간단하지만,
     현재 PC에서 sklearn DLL 차단 문제가 있어서
-    transformers + torch 방식으로 직접 임베딩을 만든다.
+    transformers + torch 방식으로 직접 임베딩을 만들었다.
     """
 
     # 질문 문장을 토큰 형태로 변환한다.
@@ -245,17 +249,30 @@ def create_question_vector(question):
     return vector
 
 
+# =========================
+# 사용자 권한 레벨 계산
+# =========================
+
 def get_user_permission_level(employee_id: str) -> int | None:
     """
     사용자 사번으로 권한 레벨을 자동 계산한다.
 
-    department_level과 job_grade_level 중 더 높은 값을 permission_level로 사용한다.
+    현재 기준:
+    - department_level = 부서 권한 레벨
+    - job_grade_level = 직급 권한 레벨
+    - position은 팀 이름이므로 권한 계산에 사용하지 않는다.
     """
 
     employee_id = employee_id.strip().upper()
 
     query = {
-        "query": {"bool": {"filter": [{"term": {"employee_id": employee_id}}]}},
+        "query": {
+            "bool": {
+                "filter": [
+                    {"term": {"employee_id": employee_id}}
+                ]
+            }
+        },
         "size": 1,
     }
 
@@ -263,7 +280,7 @@ def get_user_permission_level(employee_id: str) -> int | None:
         index=["hr_basic_1", "hr_basic_2", "hr_basic_3"],
         body=query,
     )
-    
+
     hits = response["hits"]["hits"]
 
     if not hits:
@@ -272,14 +289,14 @@ def get_user_permission_level(employee_id: str) -> int | None:
     source = hits[0]["_source"]
 
     department_level = source.get("department_level", 1)
-    job_grade_level = source.get("job_grade_level", source.get("position_level", 1))
+    job_grade_level = source.get("job_grade_level", 1)
 
     return max(department_level, job_grade_level)
+
 
 # =========================
 # 질문 기반 검색 인덱스 선택 함수
 # =========================
-
 
 def get_doc_types_by_keywords(question: str) -> list[str]:
     """
@@ -327,10 +344,10 @@ def select_search_indices(question: str, permission_level: int) -> list[str]:
 
     return selected_indices or indices
 
+
 # =========================
 # BM25 검색 함수
 # =========================
-
 
 def search_bm25(question, permission_level, employee_id=None, size=5, indices=None):
     """
@@ -360,7 +377,9 @@ def search_bm25(question, permission_level, employee_id=None, size=5, indices=No
         query = {
             "query": {
                 "bool": {
-                    "must": [{"match_all": {}}],
+                    "must": [
+                        {"match_all": {}}
+                    ],
                     "filter": [
                         {"term": {"employee_id": employee_id}}
                     ],
@@ -368,31 +387,39 @@ def search_bm25(question, permission_level, employee_id=None, size=5, indices=No
             },
             "size": size,
         }
+
     else:
         # 일반 검색
         # 예: "마케팅부 직원 찾아줘", "성과 좋은 직원 찾아줘"
         query = {
             "query": {
                 "bool": {
-                    "must": [{"match": {"embedding_text": question}}],
+                    "must": [
+                        {"match": {"embedding_text": question}}
+                    ],
                     "filter": [],
                 }
             },
             "size": size,
         }
-
         # =========================
         # 2. 부서 필터 추가
         # =========================
         # "마케팅부 직원 찾아줘"처럼 부서명이 있으면
         # department 필드로 정확히 제한한다.
-
-        departments = ["마케팅부", "기획부", "인사부", "개발부", "영업부", "재무부"]
+        departments = [
+            "마케팅부",
+            "기획부",
+            "인사부",
+            "개발부",
+            "영업부",
+            "재무부",
+        ]
 
         for department in departments:
             if department in question:
                 query["query"]["bool"]["filter"].append(
-                    {"term": {"department": department}}
+                    {"match_phrase": {"department": department}}
                 )
                 break
 
@@ -417,13 +444,13 @@ def search_bm25(question, permission_level, employee_id=None, size=5, indices=No
         index=indices,
         body=query,
     )
+
     return response["hits"]["hits"]
 
 
 # =========================
 # 벡터 검색 함수
 # =========================
-
 
 def cosine_similarity(vec1, vec2):
     dot = sum(a * b for a, b in zip(vec1, vec2))
@@ -432,7 +459,14 @@ def cosine_similarity(vec1, vec2):
     return dot / (norm_a * norm_b + 1e-9)
 
 
-def search_vector(question, question_vector, permission_level, employee_id=None, size=5, indices=None):
+def search_vector(
+    question,
+    question_vector,
+    permission_level,
+    employee_id=None,
+    size=5,
+    indices=None,
+):
     """
     embedding_vector 필드를 대상으로 벡터 유사도 검색을 수행한다.
 
@@ -455,7 +489,7 @@ def search_vector(question, question_vector, permission_level, employee_id=None,
             "query": {
                 "bool": {
                     "should": [
-                        {"term": {"employee_name": target_name}},
+                        {"match_phrase": {"employee_name": target_name}},
                         {"match_phrase": {"embedding_text": target_name}},
                     ],
                     "minimum_should_match": 1,
@@ -468,22 +502,30 @@ def search_vector(question, question_vector, permission_level, employee_id=None,
 
         if candidate_hits:
             ranked_hits = []
+
             for hit in candidate_hits:
                 embedding_vector = hit.get("_source", {}).get("embedding_vector")
+
                 if not embedding_vector:
                     continue
+
                 score = cosine_similarity(question_vector, embedding_vector)
                 ranked_hits.append((score, hit))
 
             ranked_hits.sort(key=lambda item: item[0], reverse=True)
+
             return [hit for score, hit in ranked_hits[:size]]
 
     expanded_k = max(size * 10, 50)
+
     query = {
         "size": expanded_k,
         "query": {
             "knn": {
-                "embedding_vector": {"vector": question_vector, "k": expanded_k}
+                "embedding_vector": {
+                    "vector": question_vector,
+                    "k": expanded_k,
+                }
             }
         },
     }
@@ -501,6 +543,7 @@ def search_vector(question, question_vector, permission_level, employee_id=None,
             for hit in hits
             if hit.get("_source", {}).get("employee_id") == employee_id
         ]
+
     elif target_name:
         hits = [
             hit
@@ -515,7 +558,6 @@ def search_vector(question, question_vector, permission_level, employee_id=None,
 # =========================
 # RRF 병합 함수
 # =========================
-
 
 def merge_rrf(bm25_hits, vector_hits, k=60, size=5):
     """
@@ -539,7 +581,10 @@ def merge_rrf(bm25_hits, vector_hits, k=60, size=5):
 
         # 처음 나온 문서라면 저장 공간을 만든다.
         if doc_key not in merged:
-            merged[doc_key] = {"hit": hit, "rrf_score": 0}
+            merged[doc_key] = {
+                "hit": hit,
+                "rrf_score": 0,
+            }
 
         # 순위가 높을수록 더 큰 점수를 받는다.
         merged[doc_key]["rrf_score"] += 1 / (k + rank)
@@ -549,13 +594,18 @@ def merge_rrf(bm25_hits, vector_hits, k=60, size=5):
         doc_key = f"{hit['_index']}::{hit['_id']}"
 
         if doc_key not in merged:
-            merged[doc_key] = {"hit": hit, "rrf_score": 0}
+            merged[doc_key] = {
+                "hit": hit,
+                "rrf_score": 0,
+            }
 
         merged[doc_key]["rrf_score"] += 1 / (k + rank)
 
     # RRF 점수가 높은 순서대로 정렬한다.
     sorted_results = sorted(
-        merged.values(), key=lambda item: item["rrf_score"], reverse=True
+        merged.values(),
+        key=lambda item: item["rrf_score"],
+        reverse=True,
     )
 
     # 상위 size개만 반환한다.
@@ -563,9 +613,217 @@ def merge_rrf(bm25_hits, vector_hits, k=60, size=5):
 
 
 # =========================
-# 하이브리드 검색 함수
+# 조직/부서/팀 직접 검색 함수
 # =========================
 
+def get_basic_indices(permission_level: int) -> list[str]:
+    """
+    조직/부서/팀/직급 검색은 기본정보 인덱스만 사용한다.
+    """
+
+    indices = ACCESSIBLE_INDICES.get(permission_level, [])
+
+    return [
+        index
+        for index in indices
+        if "basic" in index
+    ]
+
+
+def get_department_list(permission_level: int) -> list[str]:
+    """
+    조회 가능한 부서 목록을 중복 제거해서 반환한다.
+
+    department.keyword를 쓰지 않고,
+    문서를 직접 읽어서 department 값을 모은다.
+    """
+
+    indices = get_basic_indices(permission_level)
+
+    if not indices:
+        return []
+
+    query = {
+        "size": 1000,
+        "_source": ["department"],
+        "query": {
+            "match_all": {}
+        },
+    }
+
+    response = client.search(index=indices, body=query)
+
+    hits = response["hits"]["hits"]
+
+    departments = set()
+
+    for hit in hits:
+        source = hit.get("_source", {})
+        department = source.get("department")
+
+        if department:
+            departments.add(department)
+
+    return sorted(list(departments))
+
+
+def search_employees_by_department_or_team(
+    department_or_team: str,
+    permission_level: int,
+    size: int = 20,
+):
+    """
+    특정 부서 또는 팀의 직원 목록을 검색한다.
+
+    현재 데이터 기준:
+    - department = 부서
+    - position = 팀
+
+    단, 데이터에 팀 정보가 없을 수도 있으므로
+    '개발팀'으로 질문하면 '개발부'도 함께 검색한다.
+    """
+
+    indices = get_basic_indices(permission_level)
+
+    print("[DEBUG] 직원 검색 indices:", indices)
+    print("[DEBUG] 원본 검색어:", department_or_team)
+
+    if not indices:
+        return []
+
+    # =========================
+    # 1. 검색어 확장
+    # =========================
+    # 개발팀 → 개발팀, 개발부
+    # 인사팀 → 인사팀, 인사부
+    # 마케팅팀 → 마케팅팀, 마케팅부
+
+    search_terms = [department_or_team]
+
+    team_to_department = {
+        "인사팀": "인사부",
+        "마케팅팀": "마케팅부",
+        "개발팀": "개발부",
+        "영업팀": "영업부",
+        "재무팀": "재무부",
+        "기획팀": "기획부",
+    }
+
+    if department_or_team in team_to_department:
+        search_terms.append(team_to_department[department_or_team])
+
+    print("[DEBUG] 확장 검색어:", search_terms)
+
+    # =========================
+    # 2. 검색 조건 생성
+    # =========================
+
+    should_conditions = []
+
+    for term in search_terms:
+        should_conditions.extend(
+            [
+                {"match_phrase": {"department": term}},
+                {"match_phrase": {"position": term}},
+                {"match_phrase": {"embedding_text": term}},
+                {"match_phrase": {"embedding_text": f"부서: {term}"}},
+                {"match_phrase": {"embedding_text": f"팀: {term}"}},
+            ]
+        )
+
+    query = {
+        "query": {
+            "bool": {
+                "should": should_conditions,
+                "minimum_should_match": 1,
+            }
+        },
+        "size": size,
+    }
+
+    response = client.search(index=indices, body=query)
+
+    hits = response["hits"]["hits"]
+
+    print("[DEBUG] 직원 검색 결과 수:", len(hits))
+
+    return hits
+
+
+def search_managers(
+    permission_level: int,
+    department_or_team: str | None = None,
+    size: int = 20,
+):
+    """
+    팀장 목록 또는 특정 부서/팀의 팀장을 검색한다.
+
+    현재 데이터에는 팀장 여부를 판단할 수 있는 필드가 없다.
+    department = 부서
+    position = 팀
+    job_grade = 직급
+
+    따라서 팀장 여부는 확인할 수 없다.
+    """
+
+    return []
+
+
+def format_employee_list_answer(hits) -> str:
+    """
+    직원 목록 검색 결과를 답변 문장으로 바꾼다.
+    """
+
+    if not hits:
+        return "조회 가능한 정보가 없습니다."
+
+    lines = []
+
+    for hit in hits:
+        source = hit.get("_source", {})
+
+        employee_name = source.get("employee_name", "이름 없음")
+        employee_id = source.get("employee_id", "사번 없음")
+        department = source.get("department", "부서 없음")
+        position = source.get("position", "팀 없음")
+        job_grade = source.get("job_grade", "직급 없음")
+
+        lines.append(
+            f"- {employee_name} ({employee_id}) / {department} / {position} / {job_grade}"
+        )
+
+    return "\n".join(lines)
+
+
+def make_sources(hits) -> list[dict]:
+    """
+    검색 결과를 API sources 형태로 변환한다.
+    """
+
+    sources = []
+
+    for hit in hits:
+        source = hit.get("_source", {})
+
+        sources.append(
+            {
+                "index": hit["_index"],
+                "_id": hit["_id"],
+                "employee_id": source.get("employee_id"),
+                "employee_name": source.get("employee_name"),
+                "department": source.get("department"),
+                "position": source.get("position"),
+                "job_grade": source.get("job_grade"),
+                "score": hit.get("_score"),
+            }
+        )
+
+    return sources
+
+
+# =========================
+# 하이브리드 검색 함수
+# =========================
 
 def search_hybrid(question, permission_level, employee_id=None, size=5):
     """
