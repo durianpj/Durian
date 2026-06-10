@@ -42,9 +42,18 @@ first_sample = None
 
 for path in jsonl_files:
     docs = []
-    with open(path, 'r', encoding='utf-8') as f:
+    try:
+        f_handle = open(path, 'r', encoding='utf-8')
+    except Exception as e:
+        print(f'JSONL 파일 열기 실패: {path.name} → {e}')
+        raise SystemExit(1)
+    with f_handle as f:
         for line in f:
-            record = json.loads(line.strip())
+            try:
+                record = json.loads(line.strip())
+            except Exception as e:
+                print(f'JSONL 파싱 실패: {path.name} → {e}')
+                raise SystemExit(1)
 
             doc = Document(
                 page_content=record['embedding_text'],
@@ -121,7 +130,7 @@ print('-' * 50)
 for file_name in doc_sets:
     original_count = len(doc_sets[file_name])
     chunk_count    = len(chunked_sets[file_name])
-    status = '정상' if chunk_count >= original_count else '소실 의심'
+    status = '정상' if chunk_count >= original_count else '경고: 데이터 소실 발생'
     print(f'  {file_name}')
     print(f'  원본 {original_count:,}건 → 청크 {chunk_count:,}건  [{status}]\n')
 

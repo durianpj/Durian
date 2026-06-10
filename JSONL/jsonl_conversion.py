@@ -31,7 +31,11 @@ if not csv_files:
 
 dfs = {}
 for path in csv_files:
-    df = pd.read_csv(path, encoding='utf-8-sig', dtype=object)
+    try:
+        df = pd.read_csv(path, encoding='utf-8-sig', dtype=object)
+    except Exception as e:
+        print(f'CSV 파일 읽기 실패: {path.name} → {e}')
+        raise SystemExit(1)
     dfs[path.stem] = df
     print(f'  로딩: {path.name}  ({len(df):,}행 / {len(df.columns)}열)')
 
@@ -50,6 +54,8 @@ if not basic_df.empty:
         }
 
 print(f'\n로딩 완료! 총 {len(dfs)}개 파일')
+if not basic_lookup:
+    print('경고: 기본인사정보가 없어 이름/부서/직급이 채워지지 않습니다.')
 print(f'기본인사정보 조회 딕셔너리: {len(basic_lookup):,}건')
 
 # ── 2. 변환 함수 정의 ──────────────────────────────────────────────────────────
@@ -126,13 +132,17 @@ for source_name, df in dfs.items():
 
     old_records = {}
     if out_path.exists():
-        with open(out_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                rec = json.loads(line)
-                old_records[rec.get('employee_id', '')] = rec
+        try:
+            with open(out_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    rec = json.loads(line)
+                    old_records[rec.get('employee_id', '')] = rec
+        except Exception as e:
+            print(f'기존 JSONL 파일 읽기 실패: {out_path.name} → {e}')
+            raise SystemExit(1)
 
     rows = df.to_dict('records')
 

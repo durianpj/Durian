@@ -205,8 +205,13 @@ def ensure_user_dictionary():
         if not src.exists():
             print(f'{filename} 파일이 없습니다. 건너뜀')
             continue
-        shutil.copy(src, dst)
-        print(f'복사 완료: {dst}')
+        try:
+            shutil.copy(src, dst)
+            print(f'복사 완료: {dst}')
+        except Exception as e:
+            print(f'{filename} 복사 실패 → {e}')
+            print(f'OPENSEARCH_HOME 경로를 확인해주세요. ({OPENSEARCH_HOME})')
+            raise SystemExit(1)
 
 
 def ensure_nori_plugin(client):
@@ -223,7 +228,12 @@ def ensure_nori_plugin(client):
     zip_path = Path(os.getenv('TEMP', '/tmp')) / f'analysis-nori-{version}.zip'
 
     print(f'nori 플러그인 다운로드 중... ({url})')
-    urllib.request.urlretrieve(url, zip_path)
+    try:
+        urllib.request.urlretrieve(url, zip_path)
+    except Exception as e:
+        print(f'nori 플러그인 다운로드 실패 → {e}')
+        print('네트워크 연결을 확인하거나 수동으로 플러그인을 설치해주세요.')
+        raise SystemExit(1)
 
     nori_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path, 'r') as z:
@@ -307,13 +317,23 @@ def load_data(client, model, last_indexed):
     print('\n=== 데이터 적재 ===')
     print(f'  기준 시간: {last_indexed or "첫 실행 (전체 적재)"}')
 
-    for jsonl_file in sorted(INPUT_DIR.glob('*.jsonl')):
+    jsonl_files = sorted(INPUT_DIR.glob('*.jsonl'))
+    if not jsonl_files:
+        print(f'JSONL 파일 없음: {INPUT_DIR}')
+        print('JSONL 변환 스크립트를 먼저 실행해주세요.')
+        raise SystemExit(1)
+
+    for jsonl_file in jsonl_files:
         records = []
-        with open(jsonl_file, encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    records.append(json.loads(line))
+        try:
+            with open(jsonl_file, encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        records.append(json.loads(line))
+        except Exception as e:
+            print(f'JSONL 파일 읽기 실패: {jsonl_file.name} → {e}')
+            raise SystemExit(1)
 
         if not records:
             continue
@@ -405,6 +425,8 @@ def load_data(client, model, last_indexed):
                 f'신규 {len(new_ids)}명 / 변경 {len(update_ids)}명  →  '
                 f'{success:,}건 성공 / 실패 {len(failed)}건'
             )
+            if failed:
+                print(f'    경고: {len(failed)}건 적재 실패 → {failed[0]}')
 
 
 def main():
@@ -419,7 +441,7 @@ def main():
     try:
         client.info()
     except Exception as e:
-        print(f'OpenSearch 연결 실패 → {e}')
+        print(f'\nOpenSearch 연결 실패 →\n {e}\n')
         print(f'OpenSearch가 실행 중인지 확인해주세요. ({OPENSEARCH_HOST}:{OPENSEARCH_PORT})')
         raise SystemExit(1)
 
@@ -429,7 +451,12 @@ def main():
     last_indexed = read_last_indexed()
 
     print(f'임베딩 모델 로딩: {EMBEDDING_MODEL}')
-    model = SentenceTransformer(EMBEDDING_MODEL)
+    try:
+        model = SentenceTransformer(EMBEDDING_MODEL)
+    except Exception as e:
+        print(f'임베딩 모델 로딩 실패 → {e}')
+        print(f'모델명({EMBEDDING_MODEL})과 네트워크 연결을 확인해주세요.')
+        raise SystemExit(1)
 
     create_indices(client)
     load_data(client, model, last_indexed)
