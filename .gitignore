@@ -42,3 +42,17 @@ preprocessing_policy.md
 # 운영체제
 .DS_Store
 Thumbs.db
+
+
+# 실제 데이터 원본/중간 산출물
+*.csv
+*.jsonl
+
+Preprocessing/dataset/
+Preprocessing/output/
+JSONL/output/
+Chunking/output/
+embedding_indexer/output/
+
+# 각 단계별 환경변수
+**/.env

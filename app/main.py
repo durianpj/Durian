@@ -1,0 +1,447 @@
+import requests
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+from app.services.llm_service import generate_answer
+
+from app.services.question_service import (
+    is_self_question,
+    extract_employee_id,
+)
+
+from app.services.hybrid_search_service import (
+    build_context,
+    build_full_list_answer,
+    extract_embedding_text_field,
+    get_user_permission_level,
+    search_hybrid,
+)
+
+# =========================
+# FastAPI 앱 생성
+# =========================
+
+app = FastAPI(title="Durian HR RAG Chatbot")
+
+
+# =========================
+# LLM 단독 테스트 요청 모델
+# =========================
+
+class ChatRequest(BaseModel):
+    # 사용자가 입력한 질문
+    question: str
+
+
+# =========================
+# RAG 챗봇 요청 모델
+# =========================
+
+class RagChatRequest(BaseModel):
+    # 사용자가 입력한 질문
+    question: str
+
+    # 요청한 사용자의 사번
+    # 이 사번을 기준으로 권한 레벨을 자동 계산한다.
+    employee_id: str
+
+
+# =========================
+# 기본 상태 확인 API
+# =========================
+
+@app.get("/")
+def root():
+    return {"message": "Durian RAG API Running"}
+
+
+# =========================
+# LLM 단독 호출 API
+# =========================
+
+@app.post("/chat")
+def chat(request: ChatRequest):
+    """
+    RAG 검색 없이 gemma3:4b 모델만 단독으로 호출하는 테스트 API이다.
+    """
+
+    # 질문이 비어 있으면 예외 처리
+    if not request.question or not request.question.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="질문을 입력해주세요.",
+        )
+
+    # Ollama gemma3:4b 모델 호출
+    response = requests.post(
+        "http://localhost:11434/api/generate",
+        json={
+            "model": "gemma3:4b",
+            "prompt": request.question,
+            "stream": False,
+        },
+    )
+
+    # Ollama 응답을 JSON으로 변환
+    result = response.json()
+
+    return {
+        "question": request.question,
+        "answer": result["response"],
+        "model": "gemma3:4b",
+    }
+
+
+# =========================
+# RAG 챗봇 API
+# =========================
+
+@app.post("/rag-chat")
+def rag_chat(request: RagChatRequest):
+    """
+    권한 기반 RAG 챗봇 API이다.
+
+    처리 흐름:
+    1. 질문과 employee_id 입력값을 검증한다.
+    2. employee_id 기준으로 사용자 권한 레벨을 자동 계산한다.
+    3. 질문 내용 기준으로 필요한 정보 레벨을 판단한다.
+    4. 사용자 권한이 부족하면 차단한다.
+    5. 본인 질문이면 employee_id로 검색 대상을 제한한다.
+    6. OpenSearch에서 BM25 + 벡터 검색을 수행한다.
+    7. RRF 방식으로 병합된 검색 결과를 Context로 만든다.
+    8. Context와 질문을 gemma3:4b에 전달한다.
+    9. 답변과 출처 데이터를 반환한다.
+    """
+
+    # =========================
+    # 1. 질문 미입력 예외 처리
+    # =========================
+
+    if not request.question or not request.question.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="질문을 입력해주세요.",
+        )
+
+
+    # =========================
+    # 2. 사번 미입력 예외 처리
+    # =========================
+
+    if not request.employee_id or not request.employee_id.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="employee_id를 입력해주세요.",
+        )
+    # employee_id는 대소문자와 공백 차이를 없애기 위해 대문자로 통일한다.
+    employee_id = request.employee_id.strip().upper()
+
+    # =========================
+    # 3. employee_id 기준 권한 레벨 계산
+    # =========================
+    # get_user_permission_level() 내부에서
+    # department_level과 job_grade_level 중 더 높은 값을 permission_level로 사용한다.
+
+    permission_level = get_user_permission_level(employee_id)
+
+    # 사번으로 사용자를 찾지 못한 경우
+    if permission_level is None:
+        raise HTTPException(
+            status_code=404,
+            detail="사용자 사번을 찾을 수 없습니다.",
+        )
+
+    # 계산된 권한 레벨이 1, 2, 3 중 하나인지 확인
+    if permission_level not in [1, 2, 3]:
+        raise HTTPException(
+            status_code=400,
+            detail="계산된 permission_level이 올바르지 않습니다.",
+        )
+
+    # =========================
+    # 4. 질문 내용 기준 필요 권한 레벨 판단(보조검증)
+    # =========================
+    # 예:
+    # - 기본 정보: 1
+    # - 연봉, 성과, 평가: 2
+    # - 주소, 계좌번호, 징계: 3
+
+    required_level = get_required_level(request.question)
+
+    # =========================
+    # 5. 본인 질문 여부 판단
+    # =========================
+
+    is_self = is_self_question(request.question)
+
+    # =========================
+    # 6. 권한 부족 시 차단
+    # =========================
+
+    if not is_self and permission_level < required_level:
+        return {
+            "success": False,
+            "answer": "해당 정보에 접근할 권한이 없습니다.",
+            "permission": {
+                "allowed": False,
+                "employee_id": employee_id,
+                "permission_level": permission_level,
+                "required_level": required_level,
+            },
+            "sources": [],
+            "model_type": "gemma3:4b",
+        }
+
+    # =========================
+    # 7. 검색 대상 employee_id 결정
+    # =========================
+
+    search_employee_id = None
+
+    if is_self:
+        search_employee_id = employee_id
+    else:
+        search_employee_id = extract_employee_id(request.question)
+
+    # =========================
+    # 8. 검색에 사용할 권한 레벨 결정
+    # =========================
+    # 기본적으로는 요청자의 permission_level을 사용한다.
+    # 단, 본인 조회인 경우에는 본인 데이터 조회를 허용하기 위해
+    # 질문에서 필요한 required_level까지 검색 범위를 넓힌다.
+    #
+    # 예:
+    # permission_level = 1
+    # required_level = 2
+    # 질문 = "내 연봉 알려줘"
+    # → 본인 조회이므로 search_permission_level = 2
+
+    search_permission_level = permission_level
+
+    if is_self:
+        search_permission_level = max(permission_level, required_level)
+
+    list_answer = build_full_list_answer(
+        question=request.question,
+        permission_level=search_permission_level,
+    )
+
+    if list_answer:
+        return {
+            "success": True,
+            "answer": list_answer,
+            "permission": {
+                "allowed": True,
+                "employee_id": employee_id,
+                "permission_level": permission_level,
+                "required_level": required_level,
+            },
+            "sources": [],
+            "model_type": "list-aggregation",
+        }
+
+    # =========================
+    # 10. 일반 RAG 검색 실행
+    # =========================
+
+    is_list_question = any(word in request.question for word in ["종류", "목록", "리스트"])
+
+    search_size = 300 if is_list_question else 20
+
+    search_hits = search_hybrid(
+        question=request.question,
+        permission_level=search_permission_level,
+        employee_id=search_employee_id,
+        size=search_size,
+    )
+    if not search_hits:
+        return {
+            "success": False,
+            "answer": "조회 가능한 정보가 없습니다.",
+            "permission": {
+                "allowed": True,
+                "employee_id": employee_id,
+                "permission_level": permission_level,
+                "required_level": required_level,
+            },
+            "sources": [],
+            "model_type": "gemma3:4b",
+        }
+
+    # =========================
+    # 11. 검색 결과를 LLM Context로 변환
+    # =========================
+
+    context = build_context(search_hits, request.question)
+
+    # =========================
+    # 12. gemma3:4b 답변 생성
+    # =========================
+
+    answer = generate_answer(
+        question=request.question,
+        context=context,
+    )
+
+    # =========================
+    # 13. 응답에 포함할 출처 데이터 구성
+    # =========================
+
+    sources = []
+
+    for hit in search_hits:
+        source = hit.get("_source", {})
+        embedding_text = source.get("embedding_text", "")
+
+        team = extract_embedding_text_field(embedding_text, "팀")
+        position = extract_embedding_text_field(embedding_text, "직책")
+        email = extract_embedding_text_field(embedding_text, "이메일")
+        phone = extract_embedding_text_field(embedding_text, "전화번호")
+        address = extract_embedding_text_field(embedding_text, "주소")
+        salary = extract_embedding_text_field(embedding_text, "연봉")
+        account = extract_embedding_text_field(embedding_text, "계좌번호")
+
+        sources.append(
+            {
+                "index": hit["_index"],
+                "_id": hit["_id"],
+                "employee_id": source.get("employee_id"),
+                "employee_name": source.get("employee_name"),
+                "department": source.get("department"),
+                "job_grade": source.get("job_grade"),
+
+                # embedding_text에서 추출한 상세값
+                "team": team,
+                "position": position,
+                "email": email,
+                "phone": phone,
+                "address": address,
+                "salary": salary,
+                "account": account,
+
+                # 원문 확인용
+                "embedding_text": embedding_text,
+
+                "score": hit.get("_score"),
+            }
+        )
+
+    # =========================
+    # 14. 최종 응답 반환
+    # =========================
+
+    return {
+        "success": True,
+        "answer": answer,
+        "permission": {
+            "allowed": True,
+            "employee_id": employee_id,
+            "permission_level": permission_level,
+            "required_level": required_level,
+        },
+        "sources": sources,
+        "model_type": "gemma3:4b",
+    }
+
+
+# =========================
+# 질문 내용 기준 필요 권한 레벨 판단
+# =========================
+
+def get_required_level(question: str) -> int:
+    """
+    질문에 포함된 키워드를 기준으로 필요한 권한 레벨을 판단한다.
+
+    1레벨: 일반 기본 정보
+    2레벨: 성과/평가 정보
+    3레벨: 주소/연락처/계좌/급여/연봉 등 민감 정보
+    """
+
+    level_3_keywords = [
+        "주소",
+        "거주지",
+        "사는 곳",
+        "사는곳",
+        "어디 살아",
+        "어디살아",
+        "자택",
+        "주민번호",
+        "주민등록번호",
+        "전화번호",
+        "연락처",
+        "휴대폰",
+        "핸드폰",
+        "계좌번호",
+        "계좌",
+        "은행",
+        "연봉",
+        "급여",
+        "월급",
+        "받는 돈",
+        "받는돈",
+        "보상",
+        "보수",
+        "수당",
+        "징계",
+        "퇴직",
+    ]
+
+    level_2_keywords = [
+        "성과",
+        "평가",
+        "고과",
+        "점수",
+        "TOEIC",
+        "토익",
+        "자격증",
+        "포상",
+        "수상",
+    ]
+
+    level_1_keywords = [
+        "이름",
+        "마케팅부",
+        "기획부",
+        "인사부",
+        "개발부",
+        "영업부",
+        "재무부",
+        "마케팅팀",
+        "기획팀",
+        "인사팀",
+        "개발팀",
+        "영업팀",
+        "재무팀",
+        "부서",
+        "팀",
+        "직급",
+        "직책",
+        "사원",
+        "대리",
+        "과장",
+        "차장",
+        "부장",
+        "팀원",
+        "팀장",
+        "입사일",
+        "이메일",
+        "인원",
+        "집계",
+    ]
+
+    for keyword in level_3_keywords:
+        if keyword in question:
+            return 3
+
+    if "집" in question and not any(word in question for word in ["집계", "집중", "모집"]):
+        return 3
+
+    for keyword in level_2_keywords:
+        if keyword in question:
+            return 2
+
+    for keyword in level_1_keywords:
+        if keyword in question:
+            return 1
+
+    return 1
