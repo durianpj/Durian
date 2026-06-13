@@ -738,8 +738,6 @@ def search_bm25(question, permission_level, employee_id=None, size=5, indices=No
                     }
                 }
             )
-    print("[DEBUG] BM25 indices:", indices)
-    print("[DEBUG] BM25 query:", query)
 
     response = client.search(
         index=indices,
@@ -748,7 +746,6 @@ def search_bm25(question, permission_level, employee_id=None, size=5, indices=No
 
     hits = response["hits"]["hits"]
 
-    print("[DEBUG] BM25 hits count:", len(hits))
 
     return hits
 # =========================
@@ -988,8 +985,6 @@ def search_employees_by_department_or_team(
 
     indices = get_basic_indices(permission_level)
 
-    print("[DEBUG] 직원 검색 indices:", indices)
-    print("[DEBUG] 원본 검색어:", department_or_team)
 
     if not indices:
         return []
@@ -1015,7 +1010,7 @@ def search_employees_by_department_or_team(
     if department_or_team in team_to_department:
         search_terms.append(team_to_department[department_or_team])
 
-    print("[DEBUG] 확장 검색어:", search_terms)
+
 
     # =========================
     # 2. 검색 조건 생성
@@ -1047,7 +1042,7 @@ def search_employees_by_department_or_team(
 
     hits = response["hits"]["hits"]
 
-    print("[DEBUG] 직원 검색 결과 수:", len(hits))
+
 
     return hits
 
