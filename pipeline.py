@@ -825,10 +825,10 @@ def validate_qual(df):
     if '징계이력' in df.columns and '징계사유' in df.columns:
         for row in df.index:
             discipline_history = str(df.at[row, '징계이력']).strip()
-            if discipline_history in ('nan', 'NaN'):
+            if discipline_history in ('nan', 'NaN', '미입력'):
                 discipline_history = ''
             discipline_reason = str(df.at[row, '징계사유']).strip() if df.at[row, '징계사유'] else ''
-            if discipline_reason in ('nan', 'NaN'):
+            if discipline_reason in ('nan', 'NaN', '미입력'):
                 discipline_reason = ''
             emp_id = df.at[row, '사원번호']
             if discipline_history and not discipline_reason:
@@ -898,15 +898,11 @@ def run_preprocessing():
         cleaned[source_name + '_정제'] = df_clean
         print(f'  정제 결과: {len(df_clean):,}행 (제거 {len(drop_rows)}행)')
 
-    # 에러 로그 저장 (데이터가 아니라 점검용 로그라 파일로 남긴다)
-    os.makedirs(ERROR_LOG_PATH.parent, exist_ok=True)
-    error_columns = ['파일명', '행', '사원번호', '컬럼', '원본값', '사유']
-    pd.DataFrame(all_errors, columns=error_columns).to_csv(
-        ERROR_LOG_PATH, index=False, encoding='utf-8-sig'
-    )
-    print(f'\n에러 로그 저장: {ERROR_LOG_PATH}  (총 {len(all_errors):,}건)')
+    # 에러는 파일로 바로 쓰지 않고 모아서 반환한다.
+    # (1~4단계 에러를 마지막에 write_error_log 한 곳에서 단계별로 구분해 한 파일에 남긴다)
+    print(f'\n전처리 에러 누적: {len(all_errors):,}건')
 
-    return cleaned
+    return cleaned, all_errors
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -947,7 +943,9 @@ def build_embedding_text(row, info, source_name):
     # (데이터구조정의서 기준: 이름/부서/직급은 hr_basic_1에만 적재)
     if '기본인사정보' in source_name:
         for key in ['이름', '부서', '직급']:
-            val = info.get(key) or str(row.get(key, '')).strip()
+            val = info.get(key) or clean(str(row.get(key, '')))
+            if not val:
+                val = '미입력'
             parts.append(f'{key}: {val}')
             seen_keys.append(key)
 
@@ -955,7 +953,9 @@ def build_embedding_text(row, info, source_name):
     for field in EMBEDDING_FIELDS:
         if field not in row:
             continue
-        val = str(row[field]).strip()
+        val = clean(str(row[field]))
+        if not val:
+            val = '미입력'
         if field not in seen_keys:
             parts.append(f'{field}: {val}')
             seen_keys.append(field)
@@ -1078,6 +1078,7 @@ def run_chunking(records_by_source, tokenizer):
 
     chunked_by_source = {}
     empty_text_count = 0
+    chunking_errors = []   # 청킹 경고 모음 (마지막에 error.log로 남긴다)
 
     for source_name, records in records_by_source.items():
         chunks = []
@@ -1089,6 +1090,11 @@ def run_chunking(records_by_source, tokenizer):
                 emp_id = rec.get('employee_id', '?')
                 print(f'  경고: embedding_text 비어있음 → 사원 {emp_id} 스킵')
                 empty_text_count += 1
+                chunking_errors.append({
+                    '사원번호': emp_id,
+                    '사유':    '빈 embedding_text로 스킵',
+                    '상세':    source_name,
+                })
                 continue
             chunk_texts = chunk_by_tokens(normalized, MAX_TOKENS, tokenizer)
             for chunk_text in chunk_texts:
@@ -1118,9 +1124,14 @@ def run_chunking(records_by_source, tokenizer):
             print(f'    토큰 초과 {len(over_chunks)}건:')
             for emp_id, token_count in over_chunks:
                 print(f'      경고: 사원 {emp_id} 청크 {token_count}토큰 > 한계 {MAX_TOKENS} → 임베딩 시 잘릴 수 있음')
+                chunking_errors.append({
+                    '사원번호': emp_id,
+                    '사유':    '토큰 한계 초과',
+                    '상세':    f'{token_count}토큰 > 한계 {MAX_TOKENS} (임베딩 시 잘릴 수 있음)',
+                })
 
     print(f'청킹 완료 (빈 embedding_text 스킵: {empty_text_count}건)')
-    return chunked_by_source
+    return chunked_by_source, chunking_errors
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1415,6 +1426,8 @@ def run_indexing(chunks_by_source, model, client):
     # 이번 실행의 적재 시각. 실제로 저장하는 문서(신규·변경)에만 이 시각을 찍는다.
     indexed_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
+    indexing_errors = []   # 적재 실패 모음 (마지막에 error.log로 남긴다)
+
     # 모든 소스의 청크를 하나로 모은다 (인덱스 라우팅은 필드로 하므로 소스 구분은 불필요)
     all_chunks = []
     for source_name in chunks_by_source:
@@ -1527,11 +1540,43 @@ def run_indexing(chunks_by_source, model, client):
         )
         if failed:
             print(f'    경고: {len(failed)}건 적재 실패 → {failed[0]}')
+            # 실패 항목을 error.log에 남기려고 모은다.
+            # helpers.bulk 의 실패 항목은 {동작이름: {_id, error, ...}} 형태라 안쪽 dict를 꺼낸다.
+            for item in failed:
+                info = list(item.values())[0]
+                indexing_errors.append({
+                    '인덱스명': index_name,
+                    '문서ID':  info.get('_id', ''),
+                    '오류':    str(info.get('error', '')),
+                })
+
+    return indexing_errors
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 전체 실행
 # ══════════════════════════════════════════════════════════════════════════════
+
+def write_error_log(preprocessing_errors, chunking_errors, indexing_errors):
+    # 1~4단계에서 나온 문제를 한 파일(error.log)에 단계별로 구분해 남긴다 (점검용 로그).
+    # 단계마다 항목 성격이 달라 컬럼도 다르므로, 섹션 헤더로 나눈다.
+    os.makedirs(ERROR_LOG_PATH.parent, exist_ok=True)
+    with open(ERROR_LOG_PATH, 'w', encoding='utf-8-sig') as log_file:
+        log_file.write('========== 1단계: 전처리 에러 ==========\n')
+        columns = ['파일명', '행', '사원번호', '컬럼', '원본값', '사유']
+        log_file.write(pd.DataFrame(preprocessing_errors, columns=columns).to_csv(index=False))
+
+        log_file.write('\n========== 3단계: 청킹 경고 ==========\n')
+        columns = ['사원번호', '사유', '상세']
+        log_file.write(pd.DataFrame(chunking_errors, columns=columns).to_csv(index=False))
+
+        log_file.write('\n========== 4단계: 적재 실패 ==========\n')
+        columns = ['인덱스명', '문서ID', '오류']
+        log_file.write(pd.DataFrame(indexing_errors, columns=columns).to_csv(index=False))
+
+    total = len(preprocessing_errors) + len(chunking_errors) + len(indexing_errors)
+    print(f'\n에러 로그 저장: {ERROR_LOG_PATH}  (총 {total:,}건)')
+
 
 def main():
     print('\n========== OpenSearch 연결 ==========')
@@ -1564,10 +1609,13 @@ def main():
     create_indices(client)
 
     # 파이프라인 실행 (단계 사이 데이터는 파일이 아니라 메모리로 전달)
-    dfs_clean         = run_preprocessing()
-    records_by_source = run_jsonl_conversion(dfs_clean)
-    chunks_by_source  = run_chunking(records_by_source, model.tokenizer)
-    run_indexing(chunks_by_source, model, client)
+    dfs_clean, preprocessing_errors = run_preprocessing()
+    records_by_source               = run_jsonl_conversion(dfs_clean)
+    chunks_by_source, chunking_errors = run_chunking(records_by_source, model.tokenizer)
+    indexing_errors                 = run_indexing(chunks_by_source, model, client)
+
+    # 1~4단계 에러를 한 파일에 단계별로 구분해 남긴다
+    write_error_log(preprocessing_errors, chunking_errors, indexing_errors)
 
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     print(f'\n========== 전체 완료 ({now}) ==========')
