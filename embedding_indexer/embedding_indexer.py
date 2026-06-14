@@ -10,10 +10,9 @@ from dotenv import load_dotenv
 from opensearchpy import OpenSearch, helpers
 from sentence_transformers import SentenceTransformer
 
-load_dotenv()
-
 # ── 경로 설정 ──────────────────────────────────────────────────────────────────
 BASE_DIR            = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / '.env')
 INPUT_DIR           = Path(os.getenv('INPUT_DIR', str(BASE_DIR / 'Chunking' / 'output')))
 OPENSEARCH_HOME     = Path(os.getenv('OPENSEARCH_HOME', str(BASE_DIR / 'opensearch-3.3.2'))).resolve()
 LAST_INDEXED_FILE   = Path(__file__).resolve().parent / 'last_indexed.txt'

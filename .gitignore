@@ -5,6 +5,10 @@
 output/
 JSONL 변환/output/
 
+# 인덱싱 상태 파일 (실행할 때마다 자동 생성·갱신되며 환경마다 값이 다름)
+embedding_indexer/last_indexed.txt
+embedding_indexer/last_user_dictionary.txt
+
 # 벡터 DB
 vector_db/
 

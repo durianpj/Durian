@@ -8,7 +8,7 @@ print(f'pandas 버전: {pd.__version__}')
 print('라이브러리 로딩 완료!')
 
 BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / '.env')
+load_dotenv(BASE_DIR.parent / '.env')
 
 INPUT_DIR  = BASE_DIR / Path(os.getenv('INPUT_DIR',  'dataset'))
 OUTPUT_DIR = BASE_DIR / Path(os.getenv('OUTPUT_DIR', 'output'))
