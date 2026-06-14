@@ -1,5 +1,4 @@
 import os
-import re
 import json
 import shutil
 import hashlib
@@ -44,16 +43,14 @@ KNN_SPACE_TYPE = os.getenv('KNN_SPACE_TYPE', 'cosinesimil')
 INDEX_CONFIG = {
     'hr_basic_1': {
         'security_level': 1,
-        'source': '기본인사정보',
         'fields': [
             '이름', '성별', '나이', '입사일', '근속기간',
             '채용경로', '계약형태', '회사명', '사업장위치',
-            '부서', '팀', '직책', '부서레벨', '직급레벨', '직급', '이메일',
+            '부서', '팀', '직책', '직급', '이메일',
         ],
     },
     'hr_basic_2': {
         'security_level': 2,
-        'source': '기본인사정보',
         'fields': [
             '생년월일', '병역', '학력', '출신대학', '학점',
             '전화번호', '이전직장명', '이전최종직급', '이전담당업무',
@@ -61,14 +58,12 @@ INDEX_CONFIG = {
     },
     'hr_basic_3': {
         'security_level': 3,
-        'source': '기본인사정보',
         'fields': [
             '주민등록번호', '주소', '퇴직구분', '퇴직일자',
         ],
     },
     'hr_performance_2': {
         'security_level': 2,
-        'source': '역량성과',
         'fields': [
             '성과점수',
             '인사고과_2020', '인사고과_2021', '인사고과_2022',
@@ -78,48 +73,38 @@ INDEX_CONFIG = {
     },
     'hr_performance_3': {
         'security_level': 3,
-        'source': '역량성과',
         'fields': [
             '징계이력', '징계사유', '자격증수당여부',
         ],
     },
     'hr_salary_2': {
         'security_level': 2,
-        'source': '급여정보',
         'fields': [
             '잔업시간', '미사용휴가일수',
         ],
     },
     'hr_salary_3': {
         'security_level': 3,
-        'source': '급여정보',
         'fields': [
             '연봉', '급여은행', '계좌번호', '4대보험가입여부',
         ],
     },
 }
 
-# 전체 필드 목록 (embedding_text 파싱용)
-ALL_FIELDS = sorted(
-    {f for cfg in INDEX_CONFIG.values() for f in cfg['fields']},
-    key=len, reverse=True
-)
-
-
 # ── 사용자 사전 변경 감지 ──────────────────────────────────────────────────────
-def get_dict_hash() -> str:
+def get_dict_hash():
     if not USER_DICT_FILE.exists():
         return ''
     return hashlib.md5(USER_DICT_FILE.read_bytes()).hexdigest()
 
 
-def read_last_dict_hash() -> str:
+def read_last_dict_hash():
     if not LAST_USER_DICT_FILE.exists():
         return ''
     return LAST_USER_DICT_FILE.read_text(encoding='utf-8').strip()
 
 
-def write_last_dict_hash(hash_value: str):
+def write_last_dict_hash(hash_value):
     LAST_USER_DICT_FILE.write_text(hash_value, encoding='utf-8')
 
 
@@ -130,12 +115,12 @@ def read_last_indexed():
     return LAST_INDEXED_FILE.read_text(encoding='utf-8').strip()
 
 
-def write_last_indexed(timestamp: str):
+def write_last_indexed(timestamp):
     LAST_INDEXED_FILE.write_text(timestamp, encoding='utf-8')
 
 
 # ── 인덱스 매핑 ────────────────────────────────────────────────────────────────
-def build_index_body(security_level: int) -> dict:
+def build_index_body(security_level):
     return {
         'settings': {
             'index': {'knn': True},
@@ -235,15 +220,15 @@ def ensure_nori_plugin(client):
 
 
 def parse_embedding_text(text):
-    pattern = '(' + '|'.join(re.escape(f) for f in ALL_FIELDS) + '): '
-    parts = re.split(pattern, text)
+    # embedding_text는 한 줄에 하나씩 '필드명: 값' 형식 (줄바꿈으로 구분)
+    # 줄 단위로 나눈 뒤 첫 ': ' 기준으로 필드명과 값을 분리한다
     result = {}
-    i = 1
-    while i < len(parts) - 1:
-        key = parts[i]
-        val = parts[i + 1].strip()
-        result[key] = val
-        i += 2
+    for line in text.split('\n'):
+        line = line.strip()
+        if ': ' not in line:
+            continue
+        key, value = line.split(': ', 1)
+        result[key.strip()] = value.strip()
     return result
 
 
