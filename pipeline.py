@@ -116,6 +116,7 @@ INDEX_CONFIG = {
 }
 
 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 1단계: 전처리
 # ══════════════════════════════════════════════════════════════════════════════
@@ -857,9 +858,11 @@ def run_preprocessing():
         raise SystemExit(f'CSV 파일 없음: {DATASET_DIR}')
 
     dfs = {}
+    source_filenames = {}   # source_name (path.stem) -> 원본 CSV 파일명 (source 필드에 사용)
     for path in csv_files:
         df = pd.read_csv(path, encoding='utf-8-sig', dtype=object)
         dfs[path.stem] = df
+        source_filenames[path.stem] = path.name
         print(f'  로딩: {path.name}  ({len(df):,}행 / {len(df.columns)}열)')
 
     cleaned = {}
@@ -897,15 +900,14 @@ def run_preprocessing():
         print(f'  에러: {len(_errors):,}건')
 
         df_clean = df.drop(index=list(drop_rows)).reset_index(drop=True)
-        # 다음 단계(JSONL 변환)가 '_정제' 이름으로 기본인사정보를 찾으므로 같은 규칙으로 키를 만든다
-        cleaned[source_name + '_정제'] = df_clean
+        cleaned[source_name] = df_clean
         print(f'  정제 결과: {len(df_clean):,}행 (제거 {len(drop_rows)}행)')
 
     # 에러는 파일로 바로 쓰지 않고 모아서 반환한다.
-    # (1~4단계 에러를 마지막에 write_error_log 한 곳에서 단계별로 구분해 한 파일에 남긴다)
+    # (1~3단계 에러를 마지막에 write_error_log 한 곳에서 단계별로 구분해 한 파일에 남긴다)
     print(f'\n전처리 에러 누적: {len(all_errors):,}건')
 
-    return cleaned, all_errors
+    return cleaned, all_errors, source_filenames
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -966,7 +968,8 @@ def build_embedding_text(row, info, source_name):
     return '\n'.join(parts)
 
 
-def to_record(row, source_name, basic_lookup):
+def to_record(row, source_name, basic_lookup, source_csv):
+    # source_csv: 원본 CSV 파일명 (예: '기본인사정보.csv'). OpenSearch source 필드로 저장.
     emp_id = str(row.get('사원번호', '')).strip()
     info   = basic_lookup.get(emp_id, {})
 
@@ -978,12 +981,12 @@ def to_record(row, source_name, basic_lookup):
         'job_grade':        info.get('직급', clean(row.get('직급', ''))),
         'job_grade_level':  clean(row.get('직급레벨', '')) or info.get('직급레벨', ''),
         'embedding_text':   build_embedding_text(row, info, source_name),
-        'source':           source_name,
+        'source':           source_csv,
         'changed':          [],
     }
 
 
-def run_jsonl_conversion(dfs_clean):
+def run_jsonl_conversion(dfs_clean, source_filenames):
     # 정제된 DataFrame들을 직원 레코드 리스트로 바꿔 소스별로 모아 반환한다.
     print('\n========== 2단계: JSONL 변환 ==========')
 
@@ -1008,9 +1011,10 @@ def run_jsonl_conversion(dfs_clean):
 
     records_by_source = {}
     for source_name, df in dfs_clean.items():
+        source_csv = source_filenames.get(source_name, source_name)   # 원본 CSV 파일명
         records = []
         for row in df.to_dict('records'):
-            record = to_record(row, source_name, basic_lookup)
+            record = to_record(row, source_name, basic_lookup, source_csv)
             records.append(record)
         records_by_source[source_name] = records
         print(f'  변환: {source_name}  ({len(records):,}건)')
@@ -1378,7 +1382,9 @@ def run_indexing(records_by_source, model, client):
 
     # 직원별로 모든 소스(기본인사정보 / 역량성과 / 급여정보)의 필드를 하나로 합친다.
     # 인덱스가 어느 소스 필드를 쓰든 한 곳에서 꺼낼 수 있게 만든다.
-    employees = {}   # 사원번호 -> {'meta': 레코드(이름/부서/직급 등), 'parsed': {필드: 값, ...}}
+    # 동시에 필드별로 어느 원본 CSV에서 왔는지 추적해, 인덱스별 source 필드를 동적으로 결정한다.
+    employees = {}        # 사원번호 -> {'meta': 레코드(이름/부서/직급 등), 'parsed': {필드: 값, ...}}
+    field_to_source = {}  # 필드명 -> 원본 CSV 파일명 (예: '주민등록번호' -> '기본인사정보.csv')
     for source_name in records_by_source:
         for rec in records_by_source[source_name]:
             emp_id = rec.get('employee_id', '')
@@ -1386,9 +1392,20 @@ def run_indexing(records_by_source, model, client):
             if emp_id not in employees:
                 employees[emp_id] = {'meta': rec, 'parsed': {}}
             employees[emp_id]['parsed'].update(parsed)
+            for field in parsed:
+                if field not in field_to_source:
+                    field_to_source[field] = rec.get('source', '')
 
     for index_name, config in INDEX_CONFIG.items():
         fields = config['fields']
+
+        # 이 인덱스의 source 필드 값 = 인덱스 필드들이 온 원본 CSV 파일명.
+        # 첫 번째로 매칭되는 필드의 출처를 사용한다 (한 인덱스의 필드는 모두 같은 CSV에서 옴).
+        index_source = ''
+        for field in fields:
+            if field in field_to_source:
+                index_source = field_to_source[field]
+                break
 
         # (가) 이 인덱스에 이미 있는 직원별 '옛 텍스트' + '옛 변경이력'
         old_data = get_existing_docs(client, index_name)
@@ -1495,7 +1512,7 @@ def run_indexing(records_by_source, model, client):
                     'department_level': int(meta.get('department_level', 0) or 0),
                     'job_grade':        meta.get('job_grade', ''),
                     'job_grade_level':  int(meta.get('job_grade_level', 0) or 0),
-                    'source':           meta.get('source', ''),
+                    'source':           index_source,
                     'timestamp':        indexed_at,
                     'changed':          changed,
                     'embedding_text':   chunk_text,
@@ -1582,9 +1599,9 @@ def main():
 
     # 파이프라인 실행 (단계 사이 데이터는 파일이 아니라 메모리로 전달)
     # 청킹은 별도 단계가 아니라 run_indexing 안에서 인덱스별로 수행된다.
-    dfs_clean, preprocessing_errors = run_preprocessing()
-    records_by_source               = run_jsonl_conversion(dfs_clean)
-    indexing_errors, chunking_errors = run_indexing(records_by_source, model, client)
+    dfs_clean, preprocessing_errors, source_filenames = run_preprocessing()
+    records_by_source                                  = run_jsonl_conversion(dfs_clean, source_filenames)
+    indexing_errors, chunking_errors                   = run_indexing(records_by_source, model, client)
 
     # 1~3단계 에러를 한 파일에 단계별로 구분해 남긴다
     write_error_log(preprocessing_errors, chunking_errors, indexing_errors)
