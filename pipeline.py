@@ -1355,10 +1355,13 @@ def build_change_entry(old_meta, new_meta, old_text, new_text, now):
         if old_value != new_value:
             changed_fields.append({'field': label, 'old': old_value, 'new': new_value})
 
-    # 텍스트 필드 비교
+    # 텍스트 필드 비교 (메타에서 이미 본 필드는 중복 방지를 위해 스킵)
+    meta_labels = {label for _, label, _ in META_COMPARE_FIELDS}
     old_fields = parse_embedding_text(old_text)
     new_fields = parse_embedding_text(new_text)
     for field_name in new_fields:
+        if field_name in meta_labels:
+            continue
         old_value = old_fields.get(field_name, '')
         new_value = new_fields[field_name]
         if str(old_value) != str(new_value):
