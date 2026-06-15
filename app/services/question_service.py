@@ -1,10 +1,27 @@
 import re
 
+from app.services.org_policy_service import (
+    DEPARTMENTS,
+    TEAMS,
+    POSITIONS,
+)
+
+
 # =========================
 # 질문 판단 서비스
 # =========================
-# 사용자의 질문이 어떤 유형인지 판단하는 함수들을 모아두는 파일이다.
-# main.py가 너무 길어지는 것을 막기 위해 분리했다.
+
+
+def compact_text(text: str) -> str:
+    """
+    질문 비교용으로 공백을 제거한다.
+    예: "인사부 알려줘" -> "인사부알려줘"
+    """
+
+    if not text:
+        return ""
+
+    return re.sub(r"\s+", "", text)
 
 
 def is_self_question(question: str) -> bool:
@@ -18,6 +35,9 @@ def is_self_question(question: str) -> bool:
     - 나는 어느 부서야?
     """
 
+    if not question:
+        return False
+
     self_keywords = [
         "내",
         "나의",
@@ -29,12 +49,8 @@ def is_self_question(question: str) -> bool:
         "내꺼",
         "우리",
     ]
-
-    for keyword in self_keywords:
-        if keyword in question:
-            return True
-
-    return False
+    #any 하나라도 true면 true, 모두 false면 false / question에 self_keywords 중 하나라도 있으면 true, 없으면 false
+    return any(keyword in question for keyword in self_keywords)
 
 
 def extract_employee_name(question: str) -> str | None:
@@ -42,103 +58,161 @@ def extract_employee_name(question: str) -> str | None:
     질문에서 직원 이름으로 보이는 한글 이름을 추출한다.
 
     예:
-    - 임예은 부서 알려줘 -> 임예은
-    - 한지아 직급 알려줘 -> 한지아
+    - 오민호 사원번호 알려줘 -> 오민호
+    - 오민호 이메일 알려줘 -> 오민호
+
+    주의:
+    - 이메일, 부서, 직책, 팀장 같은 필드명/조건명을 이름으로 오해하면 안 된다.
     """
 
     if not question:
         return None
 
+    cleaned = compact_text(question)
+
     remove_words = [
+        # 요청 표현
         "알려줘",
         "말해줘",
+        "보여줘",
+        "조회해줘",
+        "조회",
+        "검색",
+        "찾아줘",
+        "찾아",
+        "반환",
         "뭐야",
         "무엇",
         "어디",
+        "어떻게",
+        "누구야",
+        "누구",
+        "그리고",
+
+        # 연결 표현
+        "랑",
+        "이랑",
+        "와",
+        "과",
+        "하고",
+        "및",
+
+        # 목록/집합 표현
+        "직원들",
+        "직원",
+        "팀원들",
+        "팀원",
+        "구성원",
+        "사람들",
+        "사람",
+        "목록",
+        "리스트",
+        "종류",
+        "전체",
+        "모두",
+        "모든",
+        "전부",
+
+        # 필드명
+        "사원번호",
+        "사번",
+        "이름",
+        "회사명",
+        "사업장위치",
         "부서",
         "팀",
         "직급",
         "직책",
-        "이름",
-        "사원번호",
-        "사번",
+        "이메일",
+        "메일",
+        "전화번호",
+        "연락처",
+        "주소",
+        "입사일",
+        "근속기간",
+        "생년월일",
+        "주민등록번호",
+        "주민번호",
+        "학력",
+        "출신대학",
+        "학점",
+        "채용경로",
+        "계약형태",
+        "이전직장명",
+        "이전최종직급",
+        "이전담당업무",
         "연봉",
         "급여",
+        "급여은행",
+        "은행",
+        "계좌번호",
+        "계좌",
+        "잔업시간",
+        "미사용휴가일수",
+        "성과점수",
         "성과",
         "평가",
-        "주소",
+        "인사평가",
+        "고과",
+        "인사고과",
+        "자격증",
+        "토익",
+        "TOEIC",
+        "포상이력",
+        "징계이력",
+        "징계사유",
+
+        # 본인 표현
         "내",
         "나의",
         "본인",
         "나는",
         "난",
+        "제",
+        "저의",
+        "우리",
     ]
 
-    cleaned = question.replace(" ", "")
+    # 실제 조직명/직책명은 이름이 아니다.
+    remove_words.extend(DEPARTMENTS)
+    remove_words.extend(TEAMS)
+    remove_words.extend(POSITIONS)
 
-    for word in remove_words:
+    # 긴 단어부터 제거해야 한다.
+    # 예: "팀장"보다 "팀"을 먼저 지우면 "장"만 남을 수 있다.
+    for word in sorted(remove_words, key=len, reverse=True):
         cleaned = cleaned.replace(word, "")
 
-    for particle in ["은", "는", "이", "가", "을", "를", "의", "?"]:
-        cleaned = cleaned.replace(particle, "")
+    # 조사는 전체 replace 하지 말고 끝부분만 제거한다.
+    cleaned = re.sub(r"(은|는|이|가|을|를|의|님|씨|\?)+$", "", cleaned)
 
     match = re.search(r"[가-힣]{2,4}", cleaned)
 
-    if match:
-        return match.group()
+    if not match:
+        return None
 
-    return None
+    name = match.group()
 
+    invalid_names = set(DEPARTMENTS + TEAMS + POSITIONS)
+    invalid_names.update(
+        [
+            "부서",
+            "직원",
+            "팀원",
+            "팀장",
+            "직책",
+            "직급",
+            "이메일",
+            "주소",
+            "연봉",
+            "평가",
+        ]
+    )
 
-def classify_org_question(question: str) -> str | None:
-    """
-    부서/팀/직책/조직 관련 질문 유형을 분류한다.
+    if name in invalid_names:
+        return None
 
-    반환값:
-    - department_list: 부서 목록 질문
-    - department_employee_search: 특정 부서/팀 직원 조회
-    - manager_search: 팀장/상사 질문
-    """
-
-    department_list_keywords = [
-        "부서 종류",
-        "부서 목록",
-        "부서 리스트",
-        "부서 조회",
-        "부서 알려줘",
-        "부서 뭐 있어",
-        "어떤 부서",
-    ]
-
-    manager_keywords = [
-        "팀장",
-        "상사",
-        "관리자",
-        "책임자",
-    ]
-
-    employee_list_keywords = [
-        "직원",
-        "팀원",
-        "구성원",
-        "사람",
-        "찾아줘",
-        "조회",
-        "반환",
-        "알려줘",
-    ]
-
-    if any(keyword in question for keyword in department_list_keywords):
-        return "department_list"
-
-    if any(keyword in question for keyword in manager_keywords):
-        return "manager_search"
-
-    if any(keyword in question for keyword in employee_list_keywords):
-        if any(word in question for word in ["부", "팀"]):
-            return "department_employee_search"
-
-    return None
+    return name
 
 
 def extract_department_or_team(question: str) -> str | None:
@@ -147,31 +221,42 @@ def extract_department_or_team(question: str) -> str | None:
 
     현재 데이터 기준:
     - department = 부서
-    - position = 팀
+    - team = 팀
+    - position = 직책
     """
 
-    compact_question = question.replace(" ", "")
+    if not question:
+        return None
 
-    names = [
-        "인사부",
-        "마케팅부",
-        "개발부",
-        "영업부",
-        "재무부",
-        "기획부",
-        "인사팀",
-        "마케팅팀",
-        "개발팀",
-        "영업팀",
-        "재무팀",
-        "기획팀",
-    ]
+    compact_question = compact_text(question)
 
-    for name in names:
+    for name in DEPARTMENTS + TEAMS:
         if name in compact_question:
             return name
 
     return None
+
+
+def extract_position(question: str) -> str | None:
+    """
+    질문에서 직책 조건을 추출한다.
+
+    예:
+    - 팀장 누구야 -> 팀장
+    - 인사부 팀장 알려줘 -> 팀장
+    """
+
+    if not question:
+        return None
+
+    compact_question = compact_text(question)
+
+    for position in POSITIONS:
+        if position in compact_question:
+            return position
+
+    return None
+
 
 def extract_employee_id(question: str) -> str | None:
     """
@@ -189,5 +274,30 @@ def extract_employee_id(question: str) -> str | None:
 
     if match:
         return match.group()
+
+    return None
+
+
+def classify_org_question(question: str) -> str | None:
+    """
+    예전 키워드 기반 조직 질문 분류 함수.
+
+    현재 main.py의 task 기반 흐름에서는 거의 사용하지 않는다.
+    혹시 다른 파일에서 import하고 있을 수 있으므로 호환용으로 남겨둔다.
+    """
+
+    if not question:
+        return None
+
+    compact_question = compact_text(question)
+
+    if any(word in compact_question for word in ["부서종류", "부서목록", "부서리스트", "어떤부서", "부서뭐"]):
+        return "department_list"
+
+    if any(position in compact_question for position in POSITIONS):
+        return "manager_search"
+
+    if any(name in compact_question for name in DEPARTMENTS + TEAMS):
+        return "department_employee_search"
 
     return None

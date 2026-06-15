@@ -1,4 +1,5 @@
 import requests
+import time
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODEL_NAME = "gemma3:4b"
@@ -18,7 +19,7 @@ def build_rag_prompt(question: str, context: str) -> str:
         반드시 [검색 결과]에 포함된 내용만 근거로 답변합니다.
         검색 결과에 없는 내용은 추측하거나 생성하지 않습니다.
         검색 결과만으로 답변이 불가능하면 반드시 다음 문장으로 답변합니다.
-        "조회된 데이터에서 확인할 수 없습니다."
+        "조건에 맞는 조회 결과가 없습니다."
 
         [검색 결과 해석 규칙]
 
@@ -35,7 +36,7 @@ def build_rag_prompt(question: str, context: str) -> str:
         → 팀이 브랜드팀이고, 이메일에 naver가 포함된 직원만 답변합니다.
 
         4. 조건을 만족하는 직원이 검색 결과 안에서 확인되지 않으면 다음과 같이 답변합니다.
-        "조회된 데이터에서 확인할 수 없습니다."
+        "조건에 맞는 조회 결과가 없습니다."
 
         5. 사용자가 질문한 항목만 답변합니다.
         질문하지 않은 항목은 검색 결과에 있어도 답변하지 않습니다.
@@ -51,6 +52,18 @@ def build_rag_prompt(question: str, context: str) -> str:
         주민등록번호, 계좌번호, 연봉, 주소, 전화번호 등은 질문한 경우에만 답변합니다.
 
         [답변 형식 규칙]
+
+        절대 인사말을 하지 않습니다.
+        절대 자기소개를 하지 않습니다.
+        절대 사용자의 질문을 다시 출력하지 않습니다.
+        절대 "질문:", "답변:" 같은 제목을 출력하지 않습니다.
+        절대 마크다운 제목이나 굵은 글씨를 사용하지 않습니다.
+        최종 답변 문장만 출력합니다.
+        사용자가 여러 항목을 함께 물으면 한 문장으로 자연스럽게 답변합니다.
+
+        예:
+        질문: "내 이름과 부서와 직책과 직급 알려줘"
+        답변: "오민호님의 이름은 오민호, 부서는 인사부, 직책은 팀원, 직급은 차장입니다."
 
         답변은 한국어로 작성합니다.
         답변은 짧고 명확하게 작성합니다.
@@ -106,6 +119,7 @@ def build_rag_prompt(question: str, context: str) -> str:
         [목록 질문 요약]이 있으면 그 내용만 사용해서 답변합니다.
         직원 이름으로 답하지 말고, 목록에 있는 항목만 답변합니다.
 
+
         [검색 결과]
         {context}
 
@@ -123,8 +137,11 @@ def generate_answer(question: str, context: str) -> str:
     Context 기반 답변을 생성한다.
     """
 
+    start_time = time.perf_counter()
     prompt = build_rag_prompt(question, context)
+    print("[TIME] build_rag_prompt:", f"{time.perf_counter() - start_time:.3f}s")
 
+    request_start_time = time.perf_counter()
     response = requests.post(
         OLLAMA_URL,
         json={
@@ -137,9 +154,15 @@ def generate_answer(question: str, context: str) -> str:
         },
         timeout=60,
     )
+    print(
+        "[TIME] generate_answer ollama:",
+        f"{time.perf_counter() - request_start_time:.3f}s",
+    )
 
     response.raise_for_status()
 
     result = response.json()
+
+    print("[TIME] generate_answer total:", f"{time.perf_counter() - start_time:.3f}s")
 
     return result.get("response", "").strip()
