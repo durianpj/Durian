@@ -1,0 +1,14 @@
+{
+  "name": "dma-frontend",
+  "version": "1.0.0",
+  "description": "HR 챗봇 프론트엔드 (Express + 프록시 서버)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "http-proxy-middleware": "^3.0.0"
+  }
+}
