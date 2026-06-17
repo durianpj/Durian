@@ -65,7 +65,7 @@ KNN_SPACE_TYPE = os.getenv('KNN_SPACE_TYPE', 'cosinesimil')
 # 인덱스별 설정 (보안등급별로 어떤 필드가 들어가는지 정의)
 INDEX_CONFIG = {
     'hr_basic_1': {
-        'security_level': 1,
+        'required_level': 1,
         'fields': [
             '이름', '성별', '나이', '입사일', '근속기간',
             '채용경로', '계약형태', '회사명', '사업장위치',
@@ -73,20 +73,20 @@ INDEX_CONFIG = {
         ],
     },
     'hr_basic_2': {
-        'security_level': 2,
+        'required_level': 2,
         'fields': [
             '생년월일', '병역', '학력', '출신대학', '학점',
             '전화번호', '이전직장명', '이전최종직급', '이전담당업무',
         ],
     },
     'hr_basic_3': {
-        'security_level': 3,
+        'required_level': 3,
         'fields': [
             '주민등록번호', '주소', '퇴직구분', '퇴직일자',
         ],
     },
     'hr_performance_2': {
-        'security_level': 2,
+        'required_level': 2,
         'fields': [
             '성과점수',
             '인사고과_2020', '인사고과_2021', '인사고과_2022',
@@ -95,19 +95,19 @@ INDEX_CONFIG = {
         ],
     },
     'hr_performance_3': {
-        'security_level': 3,
+        'required_level': 3,
         'fields': [
             '징계이력', '징계사유', '자격증수당여부',
         ],
     },
     'hr_salary_2': {
-        'security_level': 2,
+        'required_level': 2,
         'fields': [
             '잔업시간', '미사용휴가일수',
         ],
     },
     'hr_salary_3': {
-        'security_level': 3,
+        'required_level': 3,
         'fields': [
             '연봉', '급여은행', '계좌번호', '4대보험가입여부',
         ],
@@ -1283,14 +1283,14 @@ def write_last_dict_hash(hash_value):
     LAST_USER_DICT_FILE.write_text(hash_value, encoding='utf-8')
 
 
-def build_index_body(security_level):
+def build_index_body(required_level):
     # OpenSearch 인덱스 생성 요청 본문을 만든다.
     # settings:
     #   - knn: True → KNN(벡터 유사도 검색) 기능 활성화
     #   - nori_tokenizer: 한국어 형태소 분석기. decompound_mode='mixed' 는
     #     복합어를 원형과 분해 형태 모두 인덱싱해 '백엔드팀' → '백엔드' + '팀' 검색 가능
     # mappings:
-    #   - _meta.security_level: 인덱스 레벨 보안등급. 검색 서비스에서 사용자 등급과 비교에 사용
+    #   - _meta.required_level: 인덱스 레벨 보안등급. 검색 서비스에서 사용자 등급과 비교에 사용
     #   - keyword 타입: 정확히 일치 검색·집계에 사용 (분석 없이 그대로 저장)
     #   - changed: 변경이력 객체. enabled=False → OpenSearch가 색인을 만들지 않아
     #     저장 공간을 절약하면서도 _source에서 읽어올 수는 있다
@@ -1315,7 +1315,7 @@ def build_index_body(security_level):
             },
         },
         'mappings': {
-            '_meta': {'security_level': security_level},
+            '_meta': {'required_level': required_level},
             'properties': {
                 'employee_id':      {'type': 'keyword'},
                 'employee_name':    {'type': 'keyword'},
@@ -1461,8 +1461,8 @@ def create_indices(client):
             print(f'  이미 존재: {name}  (건너뜀)')
             continue
         try:
-            client.indices.create(index=name, body=build_index_body(config['security_level']))
-            print(f'  생성 완료: {name}  (security_level={config["security_level"]})')
+            client.indices.create(index=name, body=build_index_body(config['required_level']))
+            print(f'  생성 완료: {name}  (required_level={config["required_level"]})')
         except Exception as error:
             print(f'  인덱스 생성 실패: {name}  → {error}')
             raise SystemExit(1)
