@@ -7,41 +7,14 @@ from transformers import AutoTokenizer, AutoModel
 import torch
 
 from app.services.question_service import extract_employee_name
-from app.services.query_policy_service import FIELD_RULES
-from app.services.org_policy_service import (
+from common.hr_fields import ACCESSIBLE_INDICES, FIELD_RULES
+from common.hr_master_data import (
     DEPARTMENTS,
     TEAMS,
     JOB_GRADES,
     POSITIONS,
     TEAM_TO_DEPARTMENT,
 )
-
-# =========================
-# 권한별 접근 가능 인덱스 설정
-# =========================
-
-# 사용자 permission_level에 따라 검색 가능한 인덱스를 제한한다.
-# 실제 권한 제한은 검색 쿼리 안에서 하는 것이 아니라,
-# 애초에 검색 대상 인덱스를 제한하는 방식으로 처리한다.
-ACCESSIBLE_INDICES = {
-    1: ["hr_basic_1"],
-    2: [
-        "hr_basic_1",
-        "hr_basic_2",
-        "hr_performance_2",
-        "hr_salary_2",
-    ],
-    3: [
-        "hr_basic_1",
-        "hr_basic_2",
-        "hr_basic_3",
-        "hr_performance_2",
-        "hr_performance_3",
-        "hr_salary_2",
-        "hr_salary_3",
-    ],
-}
-
 
 DOC_TYPE_KEYWORDS = {
     "salary": [
@@ -202,6 +175,80 @@ def extract_embedding_text_field(embedding_text: str, field_name: str) -> str:
             continue
 
         return rest[1:].strip()
+
+    # 추출 대상 필드 이름들을 저장할 집합(set)
+    labels = set()
+
+    # FIELD_RULES에 정의된 모든 규칙 순회
+    for rule in FIELD_RULES.values():
+
+        # label 값이 있으면 labels에 추가
+        if rule.get("label"):
+            labels.add(rule["label"])
+
+        # embedding_label 값이 있으면 labels에 추가
+        if rule.get("embedding_label"):
+            labels.add(rule["embedding_label"])
+
+    # 현재 찾고 있는 필드명은 제외
+    # (예: "이름:" 값을 찾는데 다음 라벨 탐색에 "이름"이 포함되면 안 됨)
+    labels.discard(field_name)
+
+    # embedding_text 안에서
+    # "필드명 :" 형태를 찾음
+    #
+    # 예:
+    # 이름: 홍길동
+    # 부서: 개발팀
+    #
+    # field_name = "이름" 이라면
+    # "이름:" 위치를 찾음
+    match = re.search(
+        rf"(?:^|\s){re.escape(field_name)}\s*:\s*",
+        embedding_text,
+    )
+
+    # 필드를 찾지 못한 경우 빈 문자열 반환
+    if not match:
+        return ""
+
+    # 값이 시작하는 위치
+    # 예: "이름: 홍길동" 에서 "홍길동" 시작 위치
+    value_start = match.end()
+
+    # 필드명 이후의 텍스트만 잘라냄
+    tail = embedding_text[value_start:]
+
+    # 기본적으로 끝까지를 값이라고 가정
+    value_end = len(tail)
+
+    # 다른 필드(label)가 나오는 위치를 찾음
+    for label in sorted(labels, key=len, reverse=True):
+
+        # 다음 필드 시작 위치 탐색
+        #
+        # 예:
+        # 부서:
+        # 직급:
+        #
+        next_match = re.search(
+            rf"(?:^|\s){re.escape(label)}\s*:",
+            tail,
+        )
+
+        # 더 가까운 다음 필드를 찾으면
+        # 그 위치를 값의 끝으로 설정
+        if next_match and next_match.start() < value_end:
+            value_end = next_match.start()
+
+    # 현재 필드의 값만 잘라서 반환
+    #
+    # 예:
+    # 이름: 홍길동 부서: 개발팀
+    #
+    # field_name = "이름"
+    # -> "홍길동"
+    return tail[:value_end].strip()
 
     return ""
 

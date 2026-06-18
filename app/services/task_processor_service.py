@@ -2,9 +2,15 @@ import re
 import time
 import json
 
+from common.filter_utils import (
+    add_filter_if_missing,
+    get_filter_fields,
+    unique_keep_order,
+    value_appears_in_question,
+)
+from common.text_utils import compact_text
 from app.services.llm_service import generate_answer
 from app.services.question_service import (
-    compact_text,
     extract_employee_id,
     extract_employee_name,
     extract_name_like_prefix,
@@ -12,7 +18,6 @@ from app.services.question_service import (
     is_self_question,
 )
 from app.services.hybrid_search_service import (
-    ACCESSIBLE_INDICES,
     build_context,
     count_employees_by_conditions,
     employee_name_exists,
@@ -26,13 +31,14 @@ from app.services.hybrid_search_service import (
     search_hits_by_employee_ids,
     search_hybrid,
 )
-from app.services.query_policy_service import (
+from common.hr_fields import (
+    ACCESSIBLE_INDICES,
     FIELD_RULES,
     get_max_required_level,
     select_indices_by_fields,
     split_fields_by_permission,
 )
-from app.services.org_policy_service import (
+from common.hr_master_data import (
     DEPARTMENTS,
     TEAMS,
     JOB_GRADES,
@@ -69,20 +75,6 @@ def is_supervisor_query(question: str) -> bool:
     ]
 
     return any(keyword in compact_question for keyword in supervisor_keywords)
-
-
-def unique_keep_order(items: list[str]) -> list[str]:
-    """
-    리스트 순서를 유지하면서 중복을 제거한다.
-    """
-
-    result = []
-
-    for item in items:
-        if item not in result:
-            result.append(item)
-
-    return result
 
 
 def build_denied_message(denied_fields: list[str]) -> str:
@@ -241,18 +233,6 @@ def sanitize_filters(filters: list[dict]) -> list[dict]:
     return safe_filters
 
 
-def value_appears_in_question(question: str, value) -> bool:
-    """
-    filter 값이 실제 질문에 있었는지 확인한다.
-    LLM이 만든 가짜 조직 조건을 막기 위한 안전장치다.
-    """
-
-    if not question or not value:
-        return False
-
-    return compact_text(str(value)) in compact_text(question)
-
-
 def remove_hallucinated_org_values(task: dict, original_question: str) -> dict:
     """
     특정 직원 조회에서 LLM이 만들어낸 department/team/position 값을 제거한다.
@@ -363,37 +343,6 @@ def remove_ambiguous_previous_task_filter(
 # 놓친 조건이 filters에 빠져 있으면 추가하는 함수
 # filters의 예시 : filters = [{"field": "department", "op": "eq", "value": "마케팅부"},
 #                            {"field": "position", "op": "eq", "value": "대리"}]
-def add_filter_if_missing(
-    filters: list[dict],
-    field: str,
-    value,
-    op: str = "eq",
-) -> list[dict]:
-    """
-    task의 명시 조건이 filters에 빠져 있으면 검색 조건으로 추가한다.
-    """
-
-    # 필터에 추가하려는 값(value)이 없으면 그대로 반환
-    if not value:
-        return filters
-
-    # 기존 필터에 같은 field와 value가 있는지 확인한다. 있으면 추가할 필요가 없다(놓친 조건이 없음).
-    for item in filters:
-        if item.get("field") == field and item.get("value") == value:
-            return filters
-
-    # 같은 조건이 없으면 새 필터를 추가한다.
-    filters.append(
-        {
-            "field": field,
-            "op": op,
-            "value": value,
-        }
-    )
-
-    return filters
-
-
 def build_task_question(original_question: str, task: dict) -> str:
     """
     hybrid 검색에 사용할 질문을 만든다.
@@ -576,28 +525,6 @@ def format_allowed_hits_answer(
     # 만들어진 줄이 있으면 줄바꿈으로 합쳐 반환한다.
     # 없으면 조회 결과 없음 메시지를 반환한다.
     return "\n".join(lines) if lines else NO_SEARCH_RESULT_MESSAGE
-
-def get_filter_fields(filters: list[dict]) -> list[str]:
-    """
-    filters에서 권한 판단에 필요한 field 목록을 꺼낸다.
-    """
-
-    if not isinstance(filters, list):
-        return []
-
-    fields = []
-
-    for item in filters:
-        if not isinstance(item, dict):
-            continue
-
-        field = item.get("field")
-
-        if field in FIELD_RULES:
-            fields.append(field)
-
-    return unique_keep_order(fields)
-
 
 def to_number(value):
     """

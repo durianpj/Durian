@@ -1,6 +1,8 @@
 import json
 import re
 import requests
+from common.filter_utils import add_filter_if_missing, value_appears_in_question
+from common.text_utils import compact_text, parse_bool, to_none
 from app.services.llm_service import call_llm_completion
 
 from app.services.question_service import (
@@ -9,13 +11,13 @@ from app.services.question_service import (
     is_employee_collection_query,
     is_self_question,
 )
-from app.services.query_policy_service import (
+from common.hr_fields import (
     ALLOWED_FIELDS,
     ALLOWED_INTENTS,
     FIELD_RULES,
 )
 
-from app.services.org_policy_service import (
+from common.hr_master_data import (
     DEPARTMENTS,
     TEAMS,
     JOB_GRADES,
@@ -103,30 +105,6 @@ def clean_json_text(text: str) -> str:
         text = text[start : end + 1]
 
     return text
-
-def to_none(value):
-    """
-    LLM이 반환한 NULL 문자열을 Python None으로 바꾼다.
-    """
-
-    if value is None:
-        return None
-
-    value = str(value).strip()
-
-    if not value or value.upper() == "NULL":
-        return None
-
-    return value
-
-
-def parse_bool(value) -> bool:
-    """
-    true / false 문자열을 bool 값으로 바꾼다.
-    """
-
-    return str(value).strip().lower() == "true"
-
 
 def parse_target_fields(value) -> list[str]:
     """
@@ -232,36 +210,6 @@ def parse_key_value_analysis(raw_text: str) -> dict:
         "tasks": [task]
     }
 
-
-def compact_text(text: str) -> str:
-    """
-    질문 비교용으로 공백을 제거한다.
-    예: "채용팀의 계약직" -> "채용팀의계약직"
-    """
-
-    if not text:
-        return ""
-
-    return re.sub(r"\s+", "", text)
-
-def value_appears_in_question(question: str, value) -> bool:
-    """
-    값이 실제 질문 원문에 들어있는지 확인한다.
-
-    예:
-    질문: 오민호 부서 알려줘
-    value: 영업부
-    -> False
-
-    질문: 영업부 직원 알려줘
-    value: 영업부
-    -> True
-    """
-
-    if not question or not value:
-        return False
-
-    return compact_text(str(value)) in compact_text(question)
 
 def build_fallback_analysis(question: str) -> dict:
     """
@@ -428,7 +376,7 @@ def find_org_alias(question: str) -> tuple[str, str] | None:
             if matched_keyword == "인사":
                 continue
 
-            return rule["field"], rule["value"]
+        return rule["field"], rule["value"]
 
     return None
 
@@ -992,34 +940,6 @@ def normalize_filters(raw_filters) -> list[dict]:
     return normalized_filters
 
 
-def add_filter_if_missing(
-    filters: list[dict],
-    field: str,
-    value,
-    op: str = "eq",
-) -> list[dict]:
-    """
-    같은 field/value 조건이 없으면 filters에 추가한다.
-    """
-
-    if not value:
-        return filters
-
-    for item in filters:
-        if item.get("field") == field and item.get("value") == value:
-            return filters
-
-    filters.append(
-        {
-            "field": field,
-            "op": op,
-            "value": value,
-        }
-    )
-
-    return filters
-
-
 def analyze_question_to_tasks(question: str) -> dict:
     field_schema_text = build_field_schema_text()
 
@@ -1233,7 +1153,7 @@ def normalize_tasks(analysis: dict, question: str = "") -> list[dict]:
 
     중요:
     - 여기서는 권한 판단을 하지 않는다.
-    - 권한 판단은 task_processor_service.py 또는 query_policy_service.py 쪽에서 한다.
+    - 권한 판단은 task_processor_service.py 또는 common.hr_fields 쪽에서 한다.
     - 이 함수는 질문 분석 결과를 "정리/보정"하는 역할만 한다.
     """
 
@@ -1434,6 +1354,17 @@ def normalize_tasks(analysis: dict, question: str = "") -> list[dict]:
             if raw_position in POSITIONS and value_appears_in_question(question, raw_position)
             else found_position
         )
+
+        if "position" in safe_fields and not position and "직책" not in compact_question:
+            safe_fields = [
+                field
+                for field in safe_fields
+                if field != "position"
+            ]
+
+            if not safe_fields:
+                safe_fields = ["employee"]
+
         # -------------------------
         # 3-4. filters 정규화
         # -------------------------
