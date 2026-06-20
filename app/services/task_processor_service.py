@@ -508,6 +508,7 @@ def format_allowed_hits_answer(
     for item in list(grouped_items.values()) + fallback_items:
         # 한 사람 또는 한 결과에 대해 출력할 값들을 담는다.
         values = []
+        included_employee_label = False
 
         # allowed_fields에 employee가 있으면 이름/사번을 표시한다.
         if "employee" in allowed_fields:
@@ -524,11 +525,15 @@ def format_allowed_hits_answer(
             # 이름 또는 사번이 있으면 출력 값에 추가한다.
             if employee_label:
                 values.append(employee_label)
+                included_employee_label = True
 
         # 허용된 필드들을 하나씩 출력한다.
         for field in allowed_fields:
             # employee는 위에서 이미 처리했으므로 건너뛴다.
             if field == "employee":
+                continue
+
+            if included_employee_label and field in {"employee_name", "employee_id"}:
                 continue
 
             # 해당 필드 값이 있으면 답변에 추가한다.
@@ -587,6 +592,7 @@ def filter_match(actual_value, op: str, expected_value) -> bool:
         "최상": "A",
         "좋음": "A",
         "양호": "B",
+        "중간": "B",
         "보통": "C",
         "미흡": "D",
         "부진": "D",
@@ -1080,6 +1086,16 @@ def process_task(
 
     if is_limit_placeholder_name(task.get("employee_name")):
         task["employee_name"] = None
+
+    if (
+        filters
+        and intent == "single_lookup"
+        and not requested_employee_collection
+        and not is_self
+        and not task.get("employee_name")
+        and not task.get("employee_id")
+    ):
+        intent = "condition_search"
 
     # 단일 직원 조회에서 LLM이 이름을 놓친 경우에만 정규식 기반 이름 추출로 보완한다.
     if intent == "single_lookup" and not requested_employee_collection and not is_self:

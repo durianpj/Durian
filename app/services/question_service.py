@@ -348,6 +348,7 @@ def extract_employee_name(question: str) -> str | None:
 
         # 자주 쓰는 필드 별칭
         # FIELD_RULES에 없는 말만 최소한으로 둔다.
+        "번호",
         "사번",
         "메일",
         "연락처",

@@ -1708,6 +1708,15 @@ def normalize_tasks(analysis: dict, question: str = "") -> list[dict]:
         if is_limit_placeholder_name(employee_name):
             employee_name = None
 
+        if (
+            filters
+            and intent == "single_lookup"
+            and not employee_name
+            and not employee_id
+            and not task_is_self
+        ):
+            intent = "condition_search"
+
         if task_is_self:
             employee_name = None
             filters = [

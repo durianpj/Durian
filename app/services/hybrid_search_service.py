@@ -561,8 +561,6 @@ def build_context(search_hits, question="", allowed_fields=None):
                 embedding_text=embedding_text,
                 field_key=field_key,
             )
-            print("[DEBUG] context field:", field_key, "value:", value)
-
             if value:
                 label = rule.get("label", field_key)
                 lines.append(f"{label}: {value}")

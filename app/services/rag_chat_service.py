@@ -25,6 +25,73 @@ from app.services.task_processor_service import process_task
 from app.services.llm_service import get_active_llm_label
 
 
+def sanitize_sources(sources: list[dict]) -> list[dict]:
+    """
+    Keep only source identifiers in the API response.
+    """
+
+    sanitized = []
+
+    for source in sources:
+        sanitized.append(
+            {
+                "index": source.get("index"),
+                "doc_id": source.get("_id") or source.get("doc_id"),
+            }
+        )
+
+    return sanitized
+
+
+def summarize_permission(task_results: list[dict], permission_level: int) -> dict:
+    task_permissions = [
+        result.get("permission", {})
+        for result in task_results
+        if result.get("permission")
+    ]
+
+    return {
+        "allowed": any(permission.get("allowed") for permission in task_permissions),
+        "permission_level": permission_level,
+        "required_level": max(
+            [
+                permission.get("required_level", 1)
+                for permission in task_permissions
+            ]
+            or [1]
+        ),
+    }
+
+
+def build_public_error(success: bool, permission: dict) -> dict | None:
+    if success:
+        return None
+
+    if not permission.get("allowed"):
+        return {
+            "code": "ACCESS_DENIED",
+            "message": (
+                f"요청하신 정보는 Level {permission.get('required_level', 1)} "
+                "이상만 조회할 수 있습니다."
+            ),
+        }
+
+    return {
+        "code": "NO_RESULT",
+        "message": "조건에 맞는 조회 결과가 없습니다.",
+    }
+
+
+def build_debug_response(full_response: dict, source_limit: int = 5) -> dict:
+    debug_response = full_response.copy()
+    sources = full_response.get("sources", [])
+
+    debug_response["sources"] = sources[:source_limit]
+    debug_response["source_count"] = len(sources)
+
+    return debug_response
+
+
 def handle_rag_chat(question: str, employee_id: str) -> dict:
     """
     /rag-chat 요청의 전체 처리 흐름을 담당하는 함수.
@@ -47,6 +114,9 @@ def handle_rag_chat(question: str, employee_id: str) -> dict:
     # 사번 앞뒤 공백 제거 후 대문자로 통일
     # 예: emp0070 -> EMP0070
     employee_id = employee_id.strip().upper()
+    question = question.strip()
+
+    print(f"[QUESTION] employee_id={employee_id} question={question}")
 
     reset_memory_if_employee_changed(employee_id)
 
@@ -98,7 +168,7 @@ def handle_rag_chat(question: str, employee_id: str) -> dict:
 
     # 실제 질문이 보강되었는지 디버그용으로 출력
     if resolved_question != question:
-        print("[DEBUG] memory resolved question:", resolved_question)
+        print("[QUESTION] resolved_question:", resolved_question)
 
     # =========================
     # 3. 질문을 task 목록으로 분석(LLM한테 의도 분석만 맡기고 권한 판단은 절대 맡기지 않는다)
@@ -227,7 +297,7 @@ def handle_rag_chat(question: str, employee_id: str) -> dict:
     # 9. 최종 응답 조립
     # =========================
 
-    return {
+    full_response = {
         # 하나라도 허용된 task가 있으면 success를 true로 반환한다.
         "success": any(
             result.get("permission", {}).get("allowed")
@@ -259,3 +329,37 @@ def handle_rag_chat(question: str, employee_id: str) -> dict:
         # 사용한 LLM 모델명
         "model_type": get_active_llm_label(),
     }
+
+    print(
+        "[RESPONSE_DEBUG]",
+        json.dumps(build_debug_response(full_response), ensure_ascii=False),
+    )
+
+    public_permission = summarize_permission(
+        task_results=task_results,
+        permission_level=permission_level,
+    )
+    public_success = full_response["success"]
+    public_answer = full_response["answer"]
+
+    if not public_success and not public_permission.get("allowed"):
+        public_answer = "요청하신 정보는 현재 권한으로 조회할 수 없습니다."
+
+    public_response = {
+        "success": public_success,
+        "answer": public_answer,
+        "permission": public_permission,
+        "sources": sanitize_sources(sources),
+    }
+
+    public_error = build_public_error(
+        success=public_success,
+        permission=public_permission,
+    )
+
+    if public_error:
+        public_response["error"] = public_error
+
+    print("[ANSWER]", public_response["answer"])
+
+    return public_response
