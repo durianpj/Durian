@@ -1,6 +1,7 @@
 import re
-from app.services.query_policy_service import FIELD_RULES
-from app.services.org_policy_service import (
+from common.text_utils import compact_text
+from common.hr_fields import FIELD_RULES
+from common.hr_master_data import (
     DEPARTMENTS,
     TEAMS,
     JOB_GRADES,
@@ -11,18 +12,6 @@ from app.services.org_policy_service import (
 # =========================
 # 질문 판단 서비스
 # =========================
-
-
-def compact_text(text: str) -> str:
-    """
-    질문 비교용으로 공백을 제거한다.
-    예: "인사부 알려줘" -> "인사부알려줘"
-    """
-
-    if not text:
-        return ""
-
-    return re.sub(r"\s+", "", text)
 
 
 def is_self_question(question: str) -> bool:
@@ -359,6 +348,7 @@ def extract_employee_name(question: str) -> str | None:
 
         # 자주 쓰는 필드 별칭
         # FIELD_RULES에 없는 말만 최소한으로 둔다.
+        "번호",
         "사번",
         "메일",
         "연락처",

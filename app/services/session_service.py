@@ -1,4 +1,4 @@
-from app.services.org_policy_service import DEPARTMENTS, JOB_GRADES, POSITIONS, TEAMS
+from common.hr_master_data import DEPARTMENTS, JOB_GRADES, POSITIONS, TEAMS
 from app.services.hybrid_search_service import employee_name_exists
 from app.services.question_service import (
     compact_text,

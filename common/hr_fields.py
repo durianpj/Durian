@@ -107,7 +107,7 @@ FIELD_RULES = {
 
     # 샘플에서 hr_basic_1 embedding_text에 보였던 필드
     # 단, 민감도는 required_level로 따로 관리한다.
-    "gender": {
+       "gender": {
         "label": "성별",
         "doc_type": "basic",
         "index_level": 1,
@@ -399,6 +399,26 @@ ALLOWED_INTENTS = {
 
 
 ALLOWED_FIELDS = set(FIELD_RULES.keys()) | {"unknown"}
+
+
+ACCESSIBLE_INDICES = {
+    1: ["hr_basic_1"],
+    2: [
+        "hr_basic_1",
+        "hr_basic_2",
+        "hr_performance_2",
+        "hr_salary_2",
+    ],
+    3: [
+        "hr_basic_1",
+        "hr_basic_2",
+        "hr_basic_3",
+        "hr_performance_2",
+        "hr_performance_3",
+        "hr_salary_2",
+        "hr_salary_3",
+    ],
+}
 
 
 def split_fields_by_permission(

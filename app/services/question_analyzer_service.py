@@ -1,6 +1,8 @@
 import json
 import re
 import requests
+from common.filter_utils import add_filter_if_missing, value_appears_in_question
+from common.text_utils import compact_text, parse_bool, to_none
 from app.services.llm_service import call_llm_completion
 
 from app.services.question_service import (
@@ -9,13 +11,13 @@ from app.services.question_service import (
     is_employee_collection_query,
     is_self_question,
 )
-from app.services.query_policy_service import (
+from common.hr_fields import (
     ALLOWED_FIELDS,
     ALLOWED_INTENTS,
     FIELD_RULES,
 )
 
-from app.services.org_policy_service import (
+from common.hr_master_data import (
     DEPARTMENTS,
     TEAMS,
     JOB_GRADES,
@@ -103,30 +105,6 @@ def clean_json_text(text: str) -> str:
         text = text[start : end + 1]
 
     return text
-
-def to_none(value):
-    """
-    LLM이 반환한 NULL 문자열을 Python None으로 바꾼다.
-    """
-
-    if value is None:
-        return None
-
-    value = str(value).strip()
-
-    if not value or value.upper() == "NULL":
-        return None
-
-    return value
-
-
-def parse_bool(value) -> bool:
-    """
-    true / false 문자열을 bool 값으로 바꾼다.
-    """
-
-    return str(value).strip().lower() == "true"
-
 
 def parse_target_fields(value) -> list[str]:
     """
@@ -233,36 +211,6 @@ def parse_key_value_analysis(raw_text: str) -> dict:
     }
 
 
-def compact_text(text: str) -> str:
-    """
-    질문 비교용으로 공백을 제거한다.
-    예: "채용팀의 계약직" -> "채용팀의계약직"
-    """
-
-    if not text:
-        return ""
-
-    return re.sub(r"\s+", "", text)
-
-def value_appears_in_question(question: str, value) -> bool:
-    """
-    값이 실제 질문 원문에 들어있는지 확인한다.
-
-    예:
-    질문: 오민호 부서 알려줘
-    value: 영업부
-    -> False
-
-    질문: 영업부 직원 알려줘
-    value: 영업부
-    -> True
-    """
-
-    if not question or not value:
-        return False
-
-    return compact_text(str(value)) in compact_text(question)
-
 def build_fallback_analysis(question: str) -> dict:
     """
     LLM 응답 JSON이 깨졌을 때 사용하는 최소 fallback 분석기.
@@ -311,7 +259,7 @@ def build_fallback_analysis(question: str) -> dict:
         (["직급"], "job_grade"),
         (["직책"], "position"),
         (["입사일"], "hire_date"),
-        (["계약형태"], "contract_type"),
+        (["계약형태", "계약직", "정규직"], "contract_type"),
         (["성과점수"], "performance_score"),
         (["평가", "고과", "인사고과"], "evaluation_2024"),
     ]
@@ -428,7 +376,7 @@ def find_org_alias(question: str) -> tuple[str, str] | None:
             if matched_keyword == "인사":
                 continue
 
-            return rule["field"], rule["value"]
+        return rule["field"], rule["value"]
 
     return None
 
@@ -454,6 +402,102 @@ def is_org_alias_text(text: str | None) -> bool:
             return True
 
     return False
+
+
+def is_self_placeholder_name(text: str | None) -> bool:
+    """
+    본인 표현이 employee_name으로 잘못 들어온 경우를 구분한다.
+
+    예:
+    - "내부서", "내연봉", "본인주소"는 실제 직원명이 아니다.
+    - 반면 LLM이 명확한 직원명을 넣은 경우에는 본인 조회로 덮어쓰지 않는다.
+    """
+
+    if not text:
+        return False
+
+    compact_value = compact_text(str(text))
+
+    invalid_self_names = {
+        "나",
+        "내",
+        "본인",
+        "내이름",
+        "내성명",
+        "본인이름",
+        "본인성명",
+        "내부서",
+        "내연봉",
+        "내주소",
+        "내계약형태",
+    }
+
+    if compact_value in invalid_self_names:
+        return True
+
+    self_prefixes = ["내", "본인"]
+    field_words = ["부서", "연봉", "주소", "계약", "정규직", "이름", "사번"]
+
+    return any(compact_value.startswith(prefix) for prefix in self_prefixes) and any(
+        word in compact_value
+        for word in field_words
+    )
+
+
+def is_self_placeholder_filter_value(field: str | None, value) -> bool:
+    """
+    "내 이메일" 같은 질문을 LLM이 email == "내이메일" 조건으로 만든 경우를 제거하기 위한 판별.
+    본인 조회에서 이런 값은 검색 조건이 아니라 조회 대상 표현이다.
+    """
+
+    if not field or value is None:
+        return False
+
+    if not isinstance(value, str):
+        return False
+
+    compact_value = compact_text(value)
+
+    if compact_value in {"나", "내", "본인"}:
+        return True
+
+    rule = FIELD_RULES.get(field, {})
+    field_words = [
+        str(word)
+        for word in [
+            rule.get("label"),
+            rule.get("embedding_label"),
+            field,
+        ]
+        if word
+    ]
+
+    field_words.extend(
+        {
+            "메일" if field == "email" else "",
+            "급여" if field == "salary" else "",
+            "정규직" if field == "contract_type" else "",
+            "계약직" if field == "contract_type" else "",
+        }
+    )
+    field_words = [compact_text(word) for word in field_words if word]
+
+    return (
+        compact_value.startswith("내")
+        or compact_value.startswith("본인")
+    ) and any(word and word in compact_value for word in field_words)
+
+
+def is_limit_placeholder_name(text: str | None) -> bool:
+    if not text:
+        return False
+
+    compact_value = compact_text(str(text))
+
+    return bool(
+        re.fullmatch(r"\d*(명|개|건)만?", compact_value)
+        or compact_value in {"명만", "개만", "건만"}
+    )
 
 
 EVALUATION_GRADE_WORDS = {
@@ -565,6 +609,17 @@ def normalize_employee_date_year_filter(filters: list[dict], question: str) -> l
         return filters
 
     year = year_match.group()
+
+    for item in filters:
+        if not isinstance(item, dict):
+            continue
+
+        if (
+            item.get("field") in {"hire_date", "retirement_date"}
+            and item.get("op") == "eq"
+            and str(item.get("value", "")).strip() == year
+        ):
+            item["op"] = "contains"
 
     if "입사" in compact_question:
         filters = add_filter_if_missing(
@@ -715,6 +770,8 @@ def infer_sort_from_question(question: str) -> dict | None:
         "최고",
         "최저",
         "높은",
+        "좋은",
+        "우수",
         "낮은",
         "많은",
         "적은",
@@ -730,7 +787,11 @@ def infer_sort_from_question(question: str) -> dict | None:
 
     if "근속" in compact_question:
         sort_field = "tenure"
-    elif "성과점수" in compact_question or "성과" in compact_question:
+    elif (
+        "성과점수" in compact_question
+        or "성과" in compact_question
+        or "성적" in compact_question
+    ):
         sort_field = "performance_score"
     elif "평가" in compact_question or "고과" in compact_question:
         sort_field = get_evaluation_field_from_question(compact_question)
@@ -786,6 +847,22 @@ def normalize_target_fields_by_question(
 
         if "rrn" not in normalized_fields:
             normalized_fields.insert(0, "rrn")
+
+        return normalized_fields
+
+    if (
+        "성적" in compact_question
+        or "성과" in compact_question
+        or "성과점수" in compact_question
+    ):
+        normalized_fields = [
+            field
+            for field in target_fields
+            if field != "unknown"
+        ]
+
+        if "performance_score" not in normalized_fields:
+            normalized_fields.append("performance_score")
 
         return normalized_fields
 
@@ -931,6 +1008,9 @@ def normalize_filters(raw_filters) -> list[dict]:
         if field not in FIELD_RULES:
             continue
 
+        if field == "employee":
+            continue
+
         # =========================
         # 5. op 검증
         # =========================
@@ -949,6 +1029,9 @@ def normalize_filters(raw_filters) -> list[dict]:
             continue
 
         if isinstance(value, str) and value.strip().upper() == "NULL":
+            continue
+
+        if is_self_placeholder_filter_value(field, value):
             continue
 
         # =========================
@@ -990,34 +1073,6 @@ def normalize_filters(raw_filters) -> list[dict]:
 
     # 최종적으로 안전하게 정리된 filters 반환
     return normalized_filters
-
-
-def add_filter_if_missing(
-    filters: list[dict],
-    field: str,
-    value,
-    op: str = "eq",
-) -> list[dict]:
-    """
-    같은 field/value 조건이 없으면 filters에 추가한다.
-    """
-
-    if not value:
-        return filters
-
-    for item in filters:
-        if item.get("field") == field and item.get("value") == value:
-            return filters
-
-    filters.append(
-        {
-            "field": field,
-            "op": op,
-            "value": value,
-        }
-    )
-
-    return filters
 
 
 def analyze_question_to_tasks(question: str) -> dict:
@@ -1065,6 +1120,7 @@ def analyze_question_to_tasks(question: str) -> dict:
         - "나", "내", "본인", "내이름", "me", "my"를 의미하면 is_self=true.
         - 본인 질문이면 다른 사람 이름이 명확히 나온 경우가 아니면 employee_name=NULL.
         - employee_name에 "나", "내", "본인", "내이름"을 넣지 마라.
+        - is_self=true이면 filters는 반드시 NULL로 둔다. "내 이메일", "내 연봉", "본인 주소" 같은 표현을 검색 조건 값으로 만들지 마라.
 
         이름 판단 규칙:
         - employee_name은 실제 사람 이름이 명확히 언급된 경우에만 넣는다.
@@ -1078,6 +1134,8 @@ def analyze_question_to_tasks(question: str) -> dict:
         - 조직/직책/조건에 맞는 직원 목록이면 employee_list 또는 condition_search.
         - 조건 필터가 필요한 직원 조회는 condition_search.
         - "몇 명", "몇명", "인원수", "인원", "명수"가 있으면 employee_count, target_fields=employee.
+        - "5명만", "5개만", "상위 5명"처럼 개수를 제한하는 표현은 employee_name이나 filters로 만들지 마라.
+        - "성적 좋은 사람", "성과 좋은 사람"은 performance_score가 높은 순서로 정렬하는 뜻이다. 점수 기준이 명시되지 않았으면 performance_score|gte 같은 필터를 만들지 마라.
         - 부서/팀/직급/직책 종류나 목록을 물으면 category_list.
 
         Field hints:
@@ -1123,9 +1181,9 @@ def analyze_question_to_tasks(question: str) -> dict:
 
         날짜/연도 조건 규칙:
 
-        1. "2024년도", "2024년"처럼 특정 연도만 말하면 eq를 사용한다.
-        예: "2024년도 입사자" → hire_date|eq|2024
-        예: "2024년에 입사한 사람" → hire_date|eq|2024
+        1. "2024년도", "2024년"처럼 특정 연도만 말하면 contains를 사용한다.
+        예: "2024년도 입사자" → hire_date|contains|2024
+        예: "2024년에 입사한 사람" → hire_date|contains|2024
 
         2. "2024년 이전", "2024년까지", "2024년 이하"라고 명시된 경우에만 lte를 사용한다.
         예: "2024년 이전 입사자" → hire_date|lte|2024
@@ -1144,7 +1202,7 @@ def analyze_question_to_tasks(question: str) -> dict:
         주의:
         - 사용자가 "이전", "까지", "이하"라고 말하지 않았으면 lte를 쓰지 않는다.
         - 사용자가 "이후", "부터", "이상"이라고 말하지 않았으면 gte를 쓰지 않는다.
-        - 단순히 "2024년도"라고만 말하면 반드시 eq를 사용한다.
+        - 단순히 "2024년도"라고만 말하면 반드시 contains를 사용한다.
 
     사용자 질문:
     {question}
@@ -1233,7 +1291,7 @@ def normalize_tasks(analysis: dict, question: str = "") -> list[dict]:
 
     중요:
     - 여기서는 권한 판단을 하지 않는다.
-    - 권한 판단은 task_processor_service.py 또는 query_policy_service.py 쪽에서 한다.
+    - 권한 판단은 task_processor_service.py 또는 common.hr_fields 쪽에서 한다.
     - 이 함수는 질문 분석 결과를 "정리/보정"하는 역할만 한다.
     """
 
@@ -1338,6 +1396,7 @@ def normalize_tasks(analysis: dict, question: str = "") -> list[dict]:
         for keyword in count_keywords
     )
     requested_employee_collection = is_employee_collection_query(question)
+    question_is_self = is_self_question(question)
 
     # 최종적으로 정리된 task들을 담을 리스트
     normalized_tasks = []
@@ -1434,6 +1493,17 @@ def normalize_tasks(analysis: dict, question: str = "") -> list[dict]:
             if raw_position in POSITIONS and value_appears_in_question(question, raw_position)
             else found_position
         )
+
+        if "position" in safe_fields and not position and "직책" not in compact_question:
+            safe_fields = [
+                field
+                for field in safe_fields
+                if field != "position"
+            ]
+
+            if not safe_fields:
+                safe_fields = ["employee"]
+
         # -------------------------
         # 3-4. filters 정규화
         # -------------------------
@@ -1583,15 +1653,32 @@ def normalize_tasks(analysis: dict, question: str = "") -> list[dict]:
         # 이름이 없으면 None
         employee_name, employee_id = normalize_employee_identity_fields(task)
 
+        if is_limit_placeholder_name(employee_name):
+            employee_name = None
+
+        has_person_target = bool(employee_id) or (
+            bool(employee_name)
+            and not is_self_placeholder_name(employee_name)
+        )
+        task_is_self = (
+            bool(task.get("is_self", False))
+            and not has_person_target
+        ) or (
+            question_is_self
+            and not employee_id
+            and not has_person_target
+        )
+
         if requested_employee_collection:
             employee_name = None
             employee_id = None
+            task_is_self = False
 
         # intent가 single_lookup이 아니어도,
         # 질문에 사람 이름이 있으면 코드에서 다시 이름을 보정한다.
         if (
             not requested_employee_collection
-            and not bool(task.get("is_self", False))
+            and not task_is_self
             and not employee_name
             and not employee_id
         ):
@@ -1618,8 +1705,28 @@ def normalize_tasks(analysis: dict, question: str = "") -> list[dict]:
         if is_org_alias_text(employee_name):
             employee_name = None
 
-        if bool(task.get("is_self", False)):
+        if is_limit_placeholder_name(employee_name):
             employee_name = None
+
+        if (
+            filters
+            and intent == "single_lookup"
+            and not employee_name
+            and not employee_id
+            and not task_is_self
+        ):
+            intent = "condition_search"
+
+        if task_is_self:
+            employee_name = None
+            filters = [
+                item
+                for item in filters
+                if not is_self_placeholder_filter_value(
+                    item.get("field"),
+                    item.get("value"),
+                )
+            ]
 
         # -------------------------
         # 6. 정규화된 task 추가
@@ -1638,7 +1745,7 @@ def normalize_tasks(analysis: dict, question: str = "") -> list[dict]:
                 "position": position,
                 "filters": filters,
                 "sort": sort,
-                "is_self": bool(task.get("is_self", False)),
+                "is_self": task_is_self,
             }
         )
 
