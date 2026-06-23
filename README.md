@@ -345,3 +345,7 @@ OpenSearch를 재시작한 후 `python pipeline.py`를 다시 실행하세요.
 | 프론트 서버 | Node.js + Express |
 | 프론트 UI | HTML + Alpine.js |
 | 데이터 처리 | pandas, sentence-transformers |
+
+## 시스템 흐름도
+
+![시스템 흐름도](docs/docs.png)
