@@ -7,6 +7,7 @@ from pathlib import Path
 # POSITIONS: 직책 목록
 # TEAMS: 팀 목록
 from common.hr_master_data import DEPARTMENTS, JOB_GRADES, POSITIONS, TEAMS
+from common.hr_fields import FIELD_RULES
 
 # 문자열 비교를 쉽게 하기 위해 공백 등을 정리하는 함수
 # 예: "마케팅 부" -> "마케팅부"
@@ -101,6 +102,126 @@ def _read_user_dictionary_terms() -> list[str]:
     _user_dictionary_cache["terms"] = terms
 
     return terms
+
+
+def _get_field_terms() -> list[str]:
+    """
+    FIELD_RULES에 등록된 HR 필드 라벨도 LLM 후보 힌트로 사용한다.
+    필드명은 질문 분석에 직접적인 힌트이므로 user_dictionary.txt 등록 여부에 의존하지 않는다.
+    """
+
+    terms = []
+
+    for field_key, rule in FIELD_RULES.items():
+        terms.append(field_key)
+
+        label = rule.get("label")
+        if label:
+            terms.append(label)
+
+        embedding_label = rule.get("embedding_label")
+        if embedding_label:
+            terms.append(embedding_label)
+
+    aliases = [
+        "계좌",
+        "계좌번호",
+        "토익",
+        "토익점수",
+        "TOEIC",
+        "TOEIC점수",
+        "평가",
+        "인사평가",
+        "인사고과",
+        "고과",
+        "징계",
+        "징계이력",
+        "급여",
+        "연봉",
+    ]
+
+    terms.extend(aliases)
+
+    return sorted(_unique_keep_order(terms), key=len, reverse=True)
+
+
+ORG_ALIAS_CANDIDATES = [
+    {
+        "keywords": ["영업", "영업관련", "영업쪽", "영업담당"],
+        "type": "department",
+        "value": "영업부",
+    },
+    {
+        "keywords": ["개발", "개발관련", "개발쪽", "개발담당"],
+        "type": "department",
+        "value": "개발부",
+    },
+    {
+        "keywords": ["인사", "인사관련", "인사쪽", "인사담당"],
+        "type": "department",
+        "value": "인사부",
+    },
+    {
+        "keywords": ["기획", "기획관련", "기획쪽", "기획담당"],
+        "type": "department",
+        "value": "기획부",
+    },
+    {
+        "keywords": ["마케팅", "마케팅관련", "마케팅쪽", "마케팅담당"],
+        "type": "department",
+        "value": "마케팅부",
+    },
+    {
+        "keywords": ["채용", "채용관련", "채용쪽", "채용담당"],
+        "type": "team",
+        "value": "채용팀",
+    },
+]
+
+
+def _find_org_alias_candidates(question: str) -> dict[str, list[str]]:
+    compact_question = compact_text(question)
+    matched = {
+        "departments": [],
+        "teams": [],
+    }
+
+    non_org_phrases = [
+        "인사고과",
+        "인사평가",
+    ]
+
+    for rule in ORG_ALIAS_CANDIDATES:
+        matched_keyword = next(
+            (
+                keyword
+                for keyword in sorted(rule["keywords"], key=len, reverse=True)
+                if keyword in compact_question
+            ),
+            None,
+        )
+
+        if not matched_keyword:
+            continue
+
+        if matched_keyword == "인사" and any(
+            phrase in compact_question
+            for phrase in non_org_phrases
+        ):
+            continue
+
+        value = rule["value"]
+
+        if rule["type"] == "department" and value in DEPARTMENTS:
+            matched["departments"].append(value)
+
+        if rule["type"] == "team" and value in TEAMS:
+            matched["teams"].append(value)
+
+    return {
+        "departments": _unique_keep_order(matched["departments"]),
+        "teams": _unique_keep_order(matched["teams"]),
+    }
 
 
 def _find_terms_in_question(question: str, terms: list[str]) -> list[str]:
@@ -219,10 +340,17 @@ def extract_question_candidates(question: str) -> dict:
         employee_names = []
 
     # 질문 안에서 부서 후보 찾기
-    departments = _find_terms_in_question(question, DEPARTMENTS)
+    org_alias_candidates = _find_org_alias_candidates(question)
+    departments = _unique_keep_order(
+        _find_terms_in_question(question, DEPARTMENTS)
+        + org_alias_candidates["departments"]
+    )
 
     # 질문 안에서 팀 후보 찾기
-    teams = _find_terms_in_question(question, TEAMS)
+    teams = _unique_keep_order(
+        _find_terms_in_question(question, TEAMS)
+        + org_alias_candidates["teams"]
+    )
 
     # 질문 안에서 직급 후보 찾기
     job_grades = _find_terms_in_question(question, JOB_GRADES)
@@ -245,7 +373,11 @@ def extract_question_candidates(question: str) -> dict:
     # 단, 이미 다른 후보로 잡힌 값은 terms에서 제외
     dictionary_terms = []
 
-    for term in _find_terms_in_question(question, _read_user_dictionary_terms()):
+    candidate_terms = _unique_keep_order(
+        _get_field_terms() + _read_user_dictionary_terms()
+    )
+
+    for term in _find_terms_in_question(question, candidate_terms):
         compact_term = compact_text(term)
 
         if term in matched_known_org_terms or term in employee_names:

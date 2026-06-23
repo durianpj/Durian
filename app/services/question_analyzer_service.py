@@ -1,7 +1,7 @@
 import json
 import re
 import requests
-from common.filter_utils import add_filter_if_missing, value_appears_in_question
+from common.filter_utils import add_filter_if_missing, unique_keep_order, value_appears_in_question
 from common.text_utils import compact_text, parse_bool, to_none
 from app.services.llm_service import call_llm_completion
 from app.services.candidate_extractor_service import format_candidates_for_prompt
@@ -255,6 +255,7 @@ def build_fallback_analysis(question: str) -> dict:
         (["전화번호", "연락처", "휴대폰", "핸드폰"], "phone"),
         (["주소"], "address"),
         (["연봉"], "salary"),
+        (["계좌번호", "계좌"], "account"),
         (["부서"], "department"),
         (["팀"], "team"),
         (["직급"], "job_grade"),
@@ -262,7 +263,9 @@ def build_fallback_analysis(question: str) -> dict:
         (["입사일"], "hire_date"),
         (["계약형태", "계약직", "정규직"], "contract_type"),
         (["성과점수"], "performance_score"),
-        (["평가", "고과", "인사고과"], "evaluation_2024"),
+        (["평가", "고과", "인사고과"], get_evaluation_field_from_question(compact_question)),
+        (["토익점수", "토익", "TOEIC점수", "TOEIC"], "toeic"),
+        (["징계이력", "징계"], "disciplinary_history"),
     ]
 
     for keywords, field in keyword_to_field:
@@ -420,6 +423,10 @@ def is_self_placeholder_name(text: str | None) -> bool:
     compact_value = compact_text(str(text))
 
     invalid_self_names = {
+        "true",
+        "false",
+        "null",
+        "none",
         "나",
         "내",
         "본인",
@@ -804,6 +811,8 @@ def infer_sort_from_question(question: str) -> dict | None:
         sort_field = "overtime"
     elif "미사용휴가" in compact_question:
         sort_field = "unused_vacation"
+    elif "직급" in compact_question:
+        sort_field = "job_grade"
 
     if not sort_field:
         return None
@@ -833,43 +842,106 @@ def normalize_target_fields_by_question(
     """
     #질문 원문에서 공백 제거한 버전을 만든다.
     compact_question = compact_text(question)
+    normalized_fields = [
+        field
+        for field in target_fields
+        if field != "unknown"
+    ]
+    explicit_evaluation_fields = [
+        field
+        for field in normalized_fields
+        if re.fullmatch(r"evaluation_\d{4}", str(field))
+    ]
+    evaluation_field = (
+        explicit_evaluation_fields[0]
+        if explicit_evaluation_fields
+        else get_evaluation_field_from_question(compact_question)
+    )
+    detected_fields = []
+
+    keyword_to_field = [
+        (["주민등록번호", "주민번호"], "rrn"),
+        (["사원번호", "사번"], "employee_id"),
+        (["이름", "성명"], "employee"),
+        (["이메일", "메일"], "email"),
+        (["전화번호", "연락처", "휴대폰", "핸드폰"], "phone"),
+        (["주소"], "address"),
+        (["연봉", "급여"], "salary"),
+        (["계좌번호", "계좌"], "account"),
+        (["부서"], "department"),
+        (["팀"], "team"),
+        (["직급"], "job_grade"),
+        (["직책"], "position"),
+        (["입사일"], "hire_date"),
+        (["계약형태", "계약직", "정규직"], "contract_type"),
+        (["성과점수"], "performance_score"),
+        (["평가", "고과", "인사고과"], evaluation_field),
+        (["토익점수", "토익", "TOEIC점수", "TOEIC"], "toeic"),
+        (["징계이력", "징계"], "disciplinary_history"),
+    ]
+
+    field_positions = []
+
+    for keywords, field in keyword_to_field:
+        positions = [
+            compact_question.find(keyword)
+            for keyword in keywords
+            if keyword in compact_question
+        ]
+
+        if positions:
+            field_positions.append(
+                {
+                    "field": field,
+                    "position": min(positions),
+                }
+            )
+
+    detected_fields = unique_keep_order(
+        item["field"]
+        for item in sorted(field_positions, key=lambda item: item["position"])
+    )
+
+    if detected_fields:
+        normalized_fields = detected_fields
+    else:
+        normalized_fields = [
+            "employee" if field == "employee_name" else field
+            for field in normalized_fields
+        ]
+
+    normalized_fields = unique_keep_order(normalized_fields)
 
     # 사용자가 입력한 주민등록번호(rrn)를 물어본 것을 LLM이 employee_id로 잘못 분석하는 경우 rrnㅇ로 보정한다.
     if "주민등록번호" in compact_question or "주민번호" in compact_question:
-        normalized_fields = []
+        rrn_fields = []
 
-        for field in target_fields:
+        for field in normalized_fields:
             # LLM이 주민번호 질문을 사번/이름/unknown으로 잘못 잡는 경우 rrn으로 보정한다.
             if field in {"employee_id", "employee_name", "unknown"}:
                 field = "rrn"
 
-            if field not in normalized_fields:
-                normalized_fields.append(field)
+            if field not in rrn_fields:
+                rrn_fields.append(field)
 
-        if "rrn" not in normalized_fields:
-            normalized_fields.insert(0, "rrn")
+        if "rrn" not in rrn_fields:
+            rrn_fields.insert(0, "rrn")
 
-        return normalized_fields
+        return rrn_fields
 
     if (
         "성적" in compact_question
         or "성과" in compact_question
         or "성과점수" in compact_question
     ):
-        normalized_fields = [
-            field
-            for field in target_fields
-            if field != "unknown"
-        ]
-
         if "performance_score" not in normalized_fields:
             normalized_fields.append("performance_score")
 
         return normalized_fields
 
     # 주민등록번호 관련 질문이 아니면
-    # 기존 target_fields를 그대로 반환한다.
-    return target_fields
+    # 질문 원문 기준으로 보정한 target_fields를 반환한다.
+    return normalized_fields or target_fields
 
 def normalize_employee_identity_fields(task: dict) -> tuple[str | None, str | None]:
     """
@@ -881,6 +953,14 @@ def normalize_employee_identity_fields(task: dict) -> tuple[str | None, str | No
 
     employee_name = task.get("employee_name")
     employee_id = task.get("employee_id")
+
+    if employee_name is not None:
+        employee_name_text = str(employee_name).strip()
+
+        if employee_name_text.lower() in {"true", "false", "null", "none"}:
+            employee_name = None
+        else:
+            employee_name = employee_name_text
 
     if employee_id:
         employee_id_text = str(employee_id).strip()
@@ -1136,6 +1216,8 @@ def analyze_question_to_tasks(question: str, candidates: dict | None = None) -> 
         이름 판단 규칙:
         - employee_name은 실제 사람 이름이 명확히 언급된 경우에만 넣는다.
         - 사람 이름이 확실하지 않으면 employee_name=NULL.
+        - employee_name에는 true, false 같은 boolean 값을 절대 넣지 마라.
+        - 본인 질문이면 employee_name=NULL, is_self=true로만 표시한다.
         - 업무명, 부서명, 팀명, 직책명, 직급명, 고용형태, 조건 표현은 employee_name이 아니다.
         - "인사업무", "영업업무", "마케팅업무", "담당자", "계약직", "정규직", "입사자", "퇴직자", "팀장", "부서장", "직원", "사람"은 employee_name이 아니다.
         - "업무 담당자 누구야?"는 특정 사람 이름 조회가 아니라 조건에 맞는 직원 조회다.
@@ -1160,12 +1242,37 @@ def analyze_question_to_tasks(question: str, candidates: dict | None = None) -> 
         - 전화번호, 연락처, 휴대폰 -> phone
         - 주소 -> address
         - 연봉, 급여 -> salary
+        - 계좌번호, 계좌 -> account
         - 입사일 -> hire_date
         - 퇴직일, 퇴직일자 -> retirement_date
         - 계약직, 정규직, 계약형태 -> contract_type
         - 성과점수 -> performance_score
         - 평가, 고과, 인사평가 -> evaluation_2024
+        - 토익점수, 토익, TOEIC점수, TOEIC -> toeic
+        - 징계이력, 징계 -> disciplinary_history
         - 주민등록번호, 주민번호 -> rrn
+
+        target_fields 최종 점검:
+        - 최종 반환 전에 사용자 질문 원문을 다시 읽고, 답변으로 보고 싶어 하는 필드가 target_fields에서 빠졌는지 반드시 점검한다.
+        - 질문에 "이름", "부서", "직책", "직급", "이메일", "입사일", "팀"처럼 여러 필드명이 나열되면 나열된 모든 필드를 target_fields에 포함한다.
+        - 본인 질문이라도 target_fields를 줄이지 마라. 본인 여부는 is_self로만 표시한다.
+        - 필드명으로 쓰인 부서/팀/직급/직책은 filters로 만들지 말고 target_fields에 넣는다. 단, "개발부", "인프라팀", "대리", "팀장"처럼 구체적인 값이 조건으로 쓰인 경우에만 filters를 만든다.
+        - 질문에 없는 내용은 추가하지 않는다.
+        - "2023년 평가 정보가 있는 직원의 2024년 평가"처럼 조건 연도와 답변 연도가 다르면, filters에는 evaluation_2023|exists|true를 넣고 target_fields에는 evaluation_2024를 넣는다.
+        - "2023년 평가 정보가 있는 직원 찾아줘"처럼 답변 연도가 따로 없으면 target_fields에는 employee,evaluation_2023을 넣는다.
+
+        본인 복수 필드 조회 예시:
+        질문: 내 이름 부서 직책 직급 이메일 입사일 팀 알려줘
+        intent=single_lookup
+        target_fields=employee,department,position,job_grade,email,hire_date,team
+        employee_name=NULL
+        employee_id=NULL
+        department=NULL
+        team=NULL
+        job_grade=NULL
+        position=NULL
+        filters=NULL
+        is_self=true
 
         조건 예시:
         - 2024년에 입사한 사람 -> filters=hire_date|contains|2024
@@ -1472,15 +1579,17 @@ def normalize_tasks(
         basic_profile_question = any(
             keyword in compact_text(question)
             for keyword in [
-                "????",
-                "????",
-                "??????",
-                "?????",
+                "기본정보",
+                "인사정보",
+                "기본인사정보",
+                "인사프로필",
             ]
         )
 
         if basic_profile_question:
-            safe_fields = ["employee", "department", "team", "job_grade", "email"]
+            safe_fields = unique_keep_order(
+                safe_fields + ["employee", "department", "team", "job_grade", "email"]
+            )
             if not task.get("employee_name") and not task.get("employee_id"):
                 compact_question = compact_text(question)
                 guessed_name = None
@@ -1722,6 +1831,30 @@ def normalize_tasks(
             and not employee_id
             and not has_person_target
         )
+
+        has_explicit_search_target = bool(
+            employee_id
+            or has_person_target
+            or department
+            or team
+            or job_grade
+            or position
+            or filters
+            or unknown_org_candidates
+        )
+        is_targetless_single_lookup = (
+            intent in {"single_lookup", "condition_search", "unknown"}
+            and safe_fields != ["unknown"]
+            and any(field not in {"employee", "employee_name", "employee_id"} for field in safe_fields)
+            and not requested_employee_collection
+            and not requested_employee_count
+            and not requested_category_list
+            and not has_explicit_search_target
+        )
+
+        if is_targetless_single_lookup:
+            intent = "single_lookup"
+            task_is_self = True
 
         if requested_employee_collection:
             employee_name = None

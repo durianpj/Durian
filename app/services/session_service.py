@@ -304,21 +304,34 @@ def should_apply_memory_with_llm(question: str, requester_employee_id: str) -> s
         return "none"
 
     prompt = f"""
-다음 HR 질문이 이전 대화 기억을 이어받아야 하는지 판단해라.
-반드시 employee, org, none 중 하나만 출력해라.
-추가 설명은 쓰지 마라.
+    다음 HR 질문이 이전 대화 기억을 이어받아야 하는지 판단해라.
+    반드시 employee, org, none 중 하나만 출력해라.
+    추가 설명은 쓰지 마라.
 
-현재 질문: {question}
-이전 기억 요약: {json.dumps({
-    "has_employee": bool(memory.get("last_employee_name") or memory.get("last_employee_id")),
-    "has_org": bool(memory.get("last_team") or memory.get("last_department") or memory.get("last_position")),
-}, ensure_ascii=False)}
+    현재 질문: {question}
+    이전 기억 요약: {json.dumps({
+        "has_employee": bool(memory.get("last_employee_name") or memory.get("last_employee_id")),
+        "has_org": bool(memory.get("last_team") or memory.get("last_department") or memory.get("last_position")),
+    }, ensure_ascii=False)}
 
-판단 기준:
-- employee: 이전 직원 대상이 있고, 현재 질문이 그 직원을 이어서 묻는 질문이다.
-- org: 이전 부서/팀/직책 대상이 있고, 현재 질문이 그 조직을 이어서 묻는 질문이다.
-- none: 새 질문이거나 대상이 불분명하다.
-""".strip()
+    판단 기준:
+    - employee: 이전 직원 대상이 있고, 현재 질문이 그 직원을 이어서 묻는 질문이다.
+    - org: 이전 부서/팀/직책 대상이 있고, 현재 질문이 그 조직을 이어서 묻는 질문이다.
+    - none: 새 질문이거나 대상이 불분명하다.
+
+    중요 규칙:
+    - 질문이 그 자체로 독립적인 조건/목록 검색이면 반드시 none이다.
+    - "평가 정보가 있는 직원 찾아줘", "계약직 직원 찾아줘", "입사일 있는 직원 찾아줘"는 이전 조직을 이어받지 않는 새 질문이다.
+    - "그중 평가 정보가 있는 직원 찾아줘", "해당 부서에서 평가 있는 직원 찾아줘", "거기 계약직도 알려줘"처럼 이전 대상을 가리키는 표현이 있을 때만 org다.
+    - 단순히 HR 필드명이나 "직원"이라는 단어가 있다는 이유만으로 org 또는 employee를 선택하지 마라.
+
+    예시:
+    - 현재 질문: 평가 정보가 있는 직원 찾아줘 -> none
+    - 현재 질문: 그중 평가 정보가 있는 직원 찾아줘 -> org
+    - 현재 질문: 계약직 직원 찾아줘 -> none
+    - 현재 질문: 거기 계약직도 알려줘 -> org
+    - 현재 질문: 이메일 알려줘 -> employee
+    """.strip()
 
     try:
         result = call_llm_completion(
@@ -361,7 +374,7 @@ def resolve_question_with_memory(question: str, requester_employee_id: str) -> s
 
     memory_scope = should_apply_memory_with_llm(question, requester_employee_id)
 
-    if memory_scope == "none" and not (is_followup_question(question) or has_memory_applicable_keyword(question)):
+    if memory_scope == "none" and not is_followup_question(question):
         return question
 
 
@@ -390,7 +403,10 @@ def resolve_question_with_memory(question: str, requester_employee_id: str) -> s
     # 조건/목록 검색 질문에는 직원 1명 기억을 붙이지 않는다.
     # 조직 기억이 있을 때만 조직 범위의 후속 조건 검색으로 해석한다.
     if is_condition_or_collection_question(question):
-        if org_target:
+        if org_target and (
+            memory_scope == "org"
+            or is_followup_question(question)
+        ):
             return f"{org_target} {cleaned_question}"
 
         return question

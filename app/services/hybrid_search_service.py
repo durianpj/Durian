@@ -1585,6 +1585,9 @@ def build_filter_search_clause(filter_item: dict) -> dict | None:
     rule = FIELD_RULES[field]
 
     if op == "exists":
+        if rule.get("embedding_label"):
+            return None
+
         return build_field_exists_clause(rule)
 
     # 숫자 비교는 OpenSearch에서 직접 처리하지 않고,
@@ -1633,7 +1636,8 @@ def search_employees_by_filter_conditions(
         "query": (
             {
                 "bool": {
-                    "filter": filter_conditions
+                    "should": filter_conditions,
+                    "minimum_should_match": 1,
                 }
             }
             if filter_conditions

@@ -839,6 +839,16 @@ EVALUATION_SORT_SCORE = {
     "D": 1,
 }
 
+JOB_GRADE_SORT_SCORE = {
+    "사원": 1,
+    "대리": 2,
+    "과장": 3,
+    "차장": 4,
+    "부장": 5,
+    "이사": 6,
+    "사장": 7,
+}
+
 
 def get_sort_value_from_hits(employee_hits: list[dict], field_key: str):
     for hit in employee_hits:
@@ -855,6 +865,9 @@ def get_sort_value_from_hits(employee_hits: list[dict], field_key: str):
 
         if field_key.startswith("evaluation"):
             return EVALUATION_SORT_SCORE.get(str(value).strip())
+
+        if field_key == "job_grade":
+            return JOB_GRADE_SORT_SCORE.get(str(value).strip())
 
         number_value = to_number(value)
 
@@ -1393,7 +1406,8 @@ def process_task(
         }
 
     if basic_profile_question:
-        answer_fields = ["employee", "department", "team", "job_grade", "email"]
+        basic_profile_fields = ["employee", "department", "team", "job_grade", "email"]
+        answer_fields = unique_keep_order(answer_fields + basic_profile_fields)
         denied_message = ""
 
     allowed_fields = list(answer_fields)
@@ -1664,7 +1678,7 @@ def process_task(
         if basic_profile_question and search_hits:
             answer = format_allowed_hits_answer(
                 hits=search_hits,
-                allowed_fields=["employee", "department", "team", "job_grade", "email"],
+                allowed_fields=allowed_fields,
                 limit=result_limit or MAX_OUTPUT_EMPLOYEES,
             )
         elif search_employee_name and not search_employee_id and search_hits:
