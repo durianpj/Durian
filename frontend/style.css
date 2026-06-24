@@ -124,6 +124,14 @@ body {
   margin-top: -15px;
 }
 
+.response-time {
+  font-size: 11px;
+  color: #9CA3AF;
+  max-width: 70%;
+  padding: 2px 4px;
+  margin-top: -10px;
+}
+
 .source-card {
   border-radius: 8px;
   padding: 8px 12px;

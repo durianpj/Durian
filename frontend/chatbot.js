@@ -58,6 +58,8 @@ function chatbot() {
       this.loading = true;
       this.scrollToBottom();
 
+      const startTime = Date.now();
+
       try {
         const response = await fetch(API_BASE_URL + "/rag-chat", {
           method: "POST",
@@ -75,7 +77,8 @@ function chatbot() {
         }
 
         const data = await response.json();
-        this.messages.push({ role: "bot", text: data.answer, sources: data.sources || [] });
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        this.messages.push({ role: "bot", text: data.answer, sources: data.sources || [], elapsed });
 
         if (data.permission && data.permission.permission_level) {
           this.permissionLevel = data.permission.permission_level;

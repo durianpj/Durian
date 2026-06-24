@@ -43,6 +43,10 @@
             <div class="source-card">출처: <span x-text="uniqueIndices(msg.sources).join(', ')"></span></div>
           </div>
 
+          <div x-show="msg.role === 'bot' && msg.elapsed"
+               class="response-time"
+               x-text="`응답시간: ${msg.elapsed}초`"></div>
+
           <div x-show="msg.role === 'error'" class="message message-error">
             <div x-text="msg.text"></div>
             <button @click="retry(msg.question)">다시 시도</button>
