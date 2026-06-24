@@ -1188,7 +1188,14 @@ def search_vector(
 # RRF 병합 함수
 # =========================
 
-def merge_rrf(bm25_hits, vector_hits, k=60, size=5):
+def merge_rrf(
+    bm25_hits,
+    vector_hits,
+    k=60,
+    size=5,
+    bm25_weight=1.0,
+    vector_weight=1.0,
+):
     """
     BM25 검색 결과와 벡터 검색 결과를 RRF 방식으로 병합한다.
 
@@ -1196,7 +1203,7 @@ def merge_rrf(bm25_hits, vector_hits, k=60, size=5):
     대신 각 검색 결과의 순위를 기준으로 최종 점수를 계산한다.
 
     공식:
-    RRF 점수 = 1 / (k + 순위)
+    RRF 점수 = 가중치 * (1 / (k + 순위))
 
     k는 보통 60을 많이 사용한다.
     """
@@ -1216,7 +1223,7 @@ def merge_rrf(bm25_hits, vector_hits, k=60, size=5):
             }
 
         # 순위가 높을수록 더 큰 점수를 받는다.
-        merged[doc_key]["rrf_score"] += 1 / (k + rank)
+        merged[doc_key]["rrf_score"] += bm25_weight * (1 / (k + rank))
 
     # 벡터 검색 결과 순위도 RRF 점수로 반영한다.
     for rank, hit in enumerate(vector_hits, start=1):
@@ -1228,7 +1235,7 @@ def merge_rrf(bm25_hits, vector_hits, k=60, size=5):
                 "rrf_score": 0,
             }
 
-        merged[doc_key]["rrf_score"] += 1 / (k + rank)
+        merged[doc_key]["rrf_score"] += vector_weight * (1 / (k + rank))
 
     # RRF 점수가 높은 순서대로 정렬한다.
     sorted_results = sorted(
@@ -2051,10 +2058,16 @@ def search_hybrid(
  
 
     # rrf_start_time = time.perf_counter()
+
+    # BM25 검색 결과와 벡터 검색 결과를 RRF 방식으로 병합한다. 호출 
     hybrid_hits = merge_rrf(
-        bm25_hits=bm25_hits,
-        vector_hits=vector_hits,
-        size=size,
+        bm25_hits=bm25_hits,        # 키워드 기반 검색 결과
+        vector_hits=vector_hits,    # 의미 기반 벡터 검색 결과
+        size=size,                  # 최종 검색 결과 개수
+
+        # 정확한 조건 검색을 우선하기 위해 BM25 70%, 벡터 30% 비율로 RRF 점수를 계산한다.
+        bm25_weight=0.7,
+        vector_weight=0.3,
     )
     # print(
     #     "[TIME] merge_rrf:",

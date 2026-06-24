@@ -180,18 +180,28 @@ ORG_ALIAS_CANDIDATES = [
 
 
 def _find_org_alias_candidates(question: str) -> dict[str, list[str]]:
+    """
+    사용자의 질문 텍스트에서 부서(Department) 및 팀(Team) 별칭 후보를 찾아 분류하는 함수
+    """
+    # 1. 텍스트 매칭 확률을 높이기 위해 질문 내 공백/특수문자 등을 제거(압축)
     compact_question = compact_text(question)
+    
+    # 결과를 담을 딕셔너리 초기화
     matched = {
         "departments": [],
         "teams": [],
     }
 
+    # '인사팀' 등의 조직이 아닌, 일반 명사(인사고과 등)로 쓰여 제외해야 할 키워드 목록
     non_org_phrases = [
         "인사고과",
         "인사평가",
     ]
 
+    # 미리 정의된 조직 별칭 규칙 목록(ORG_ALIAS_CANDIDATES)을 하나씩 순회
     for rule in ORG_ALIAS_CANDIDATES:
+        # 규칙 내 키워드들을 글자 수가 긴 순서대로 정렬하여, 질문에 포함되어 있는지 검사
+        # (예: '인사팀'을 '인사'보다 먼저 매칭하기 위함)
         matched_keyword = next(
             (
                 keyword
@@ -201,9 +211,12 @@ def _find_org_alias_candidates(question: str) -> dict[str, list[str]]:
             None,
         )
 
+        # 매칭된 키워드가 없다면 다음 규칙으로 패스
         if not matched_keyword:
             continue
 
+        # [예외 처리] 매칭된 단어가 "인사"인데, "인사고과"나 "인사평가" 같은 맥락이라면 
+        # 실제 인사 부서를 찾는 게 아니므로 결과에서 제외
         if matched_keyword == "인사" and any(
             phrase in compact_question
             for phrase in non_org_phrases
@@ -212,12 +225,15 @@ def _find_org_alias_candidates(question: str) -> dict[str, list[str]]:
 
         value = rule["value"]
 
+        # 규칙 타입이 부서(department)이고, 유효한 부서 목록(DEPARTMENTS)에 존재하면 추가
         if rule["type"] == "department" and value in DEPARTMENTS:
             matched["departments"].append(value)
 
+        # 규칙 타입이 팀(team)이고, 유효한 팀 목록(TEAMS)에 존재하면 추가
         if rule["type"] == "team" and value in TEAMS:
             matched["teams"].append(value)
 
+    # 순서 보존하면서 중복 제거 후 최종 딕셔너리 반환
     return {
         "departments": _unique_keep_order(matched["departments"]),
         "teams": _unique_keep_order(matched["teams"]),

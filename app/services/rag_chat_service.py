@@ -28,10 +28,9 @@ from app.services.question_service import is_employee_collection_query
 from app.services.task_processor_service import is_supervisor_query, process_task
 from app.services.llm_service import get_active_llm_label
 
-
 def sanitize_sources(sources: list[dict]) -> list[dict]:
     """
-    Keep only source identifiers in the API response.
+    API 응답에서 소스(출처)의 식별자(Index, ID)만 남기고 정리하는 함수
     """
 
     sanitized = []
@@ -48,6 +47,9 @@ def sanitize_sources(sources: list[dict]) -> list[dict]:
 
 
 def summarize_permission(task_results: list[dict], permission_level: int) -> dict:
+    """
+    여러 태스크 결과들의 권한 상태를 종합하여 최종 권한 정보를 반환하는 함수
+    """
     task_permissions = [
         result.get("permission", {})
         for result in task_results
@@ -55,8 +57,10 @@ def summarize_permission(task_results: list[dict], permission_level: int) -> dic
     ]
 
     return {
+        # 하나라도 허용된 권한이 있다면 True 반환
         "allowed": any(permission.get("allowed") for permission in task_permissions),
         "permission_level": permission_level,
+        # 필요한 권한 레벨 중 가장 높은 값을 채택 (기본값 1)
         "required_level": max(
             [
                 permission.get("required_level", 1)
@@ -68,9 +72,13 @@ def summarize_permission(task_results: list[dict], permission_level: int) -> dic
 
 
 def build_public_error(success: bool, permission: dict) -> dict | None:
+    """
+    실패 상황(성공 flag가 False)일 때, 권한 부족 또는 결과 없음에 대한 공개용 에러 메시지를 생성하는 함수
+    """
     if success:
         return None
 
+    # 권한이 없는 경우 접근 거부 에러 반환
     if not permission.get("allowed"):
         return {
             "code": "ACCESS_DENIED",
@@ -80,6 +88,7 @@ def build_public_error(success: bool, permission: dict) -> dict | None:
             ),
         }
 
+    # 권한은 있으나 데이터가 없는 경우 결과 없음 에러 반환
     return {
         "code": "NO_RESULT",
         "message": "조건에 맞는 조회 결과가 없습니다.",
@@ -87,6 +96,9 @@ def build_public_error(success: bool, permission: dict) -> dict | None:
 
 
 def build_debug_response(full_response: dict, source_limit: int = 5) -> dict:
+    """
+    전체 응답에서 답변 텍스트를 제외하고 출처(Source) 개수를 제한하여 디버깅용 응답을 만드는 함수
+    """
     debug_response = full_response.copy()
     sources = full_response.get("sources", [])
 
@@ -97,6 +109,7 @@ def build_debug_response(full_response: dict, source_limit: int = 5) -> dict:
     return debug_response
 
 
+# 인사 정보 외의 질문을 했을 때 반환할 기본 안내 메시지
 NON_HR_QUESTION_MESSAGE = (
     "저는 인사 정보 조회를 돕는 챗봇입니다. "
     "인사 정보와 관련된 내용을 물어봐 주세요."
@@ -104,6 +117,9 @@ NON_HR_QUESTION_MESSAGE = (
 
 
 def is_basic_profile_question(question: str) -> bool:
+    """
+    사용자의 질문이 '기본 인사 정보'나 '프로필'을 조회하려는 의도인지 키워드로 판단하는 함수
+    """
     compact_question = question.replace(" ", "")
     return any(
         keyword in compact_question
@@ -117,6 +133,9 @@ def is_basic_profile_question(question: str) -> bool:
 
 
 def is_non_hr_task_result(tasks: list[dict]) -> bool:
+    """
+    분석된 태스크가 인사 정보 조회와 전혀 관련이 없는 '알 수 없는(unknown)' 요청인지 확인하는 함수
+    """
     if len(tasks) != 1:
         return False
 
@@ -140,6 +159,9 @@ def split_single_lookup_tasks_by_employee_candidates(
     tasks: list[dict],
     employee_names: list[str],
 ) -> list[dict]:
+    """
+    동명이인이나 여러 명의 이름 후보가 존재할 때, 하나의 단일 조회 태스크를 각 이름별 독립된 태스크로 쪼개주는 함수
+    """
     if len(employee_names) <= 1 or len(tasks) != 1:
         return tasks
 
@@ -168,6 +190,9 @@ def suppress_hidden_retired_results_for_multi_name_query(
     task_results: list[dict],
     employee_names: list[str],
 ) -> list[dict]:
+    """
+    여러 이름을 동시에 조회했을 때, 유효한 결과가 하나라도 존재한다면 권한이 없거나 숨겨진 퇴사자 결과는 필터링하여 감추는 함수
+    """
     if len(employee_names) <= 1:
         return task_results
 
@@ -208,10 +233,13 @@ def handle_rag_chat(question: str, employee_id: str) -> dict:
     # 사번 앞뒤 공백 제거 후 대문자로 통일
     # 예: emp0070 -> EMP0070
     employee_id = employee_id.strip().upper()
+    # 입력된 질문의 앞뒤 공백 제거
     question = question.strip()
 
+    # 디버깅 및 추적을 위해 정제된 요청자 사번과 질문을 로그에 기록
     print(f"[QUESTION] employee_id={employee_id} question={question}")
 
+    # 대화 세션 유지를 위해, 요청자가 변경되었다면 이전 사용자의 대화 기억(메모리)을 초기화
     reset_memory_if_employee_changed(employee_id)
 
     # =========================
@@ -245,7 +273,9 @@ def handle_rag_chat(question: str, employee_id: str) -> dict:
             detail="계산된 permission_level이 유효하지 않습니다.",
         )
 
+    # 요청자가 이미 퇴사한 사원인지 검증
     if is_retired_employee(employee_id):
+        # 퇴사자 계정인 경우 처리를 중단하고 거부 응답 반환
         return {
             "success": False,
             "answer": "퇴사 처리된 계정입니다.",
@@ -333,20 +363,25 @@ def handle_rag_chat(question: str, employee_id: str) -> dict:
     # LLM이 잘못된 intent나 field를 줄 수 있기 때문에
     # 허용된 intent / 허용된 field만 남기도록 보정한다.
     tasks = normalize_tasks(analysis, resolved_question, candidates=candidates)
+    # 보정 및 정규화가 완료된 최종 task 목록을 디버그 로그로 출력
     print(
         "[DEBUG] normalized task after LLM correction:",
         json.dumps(tasks, ensure_ascii=False),
     )
 
+    # 추출된 후보군 중에서 직원 이름 목록을 안전하게 가져옴 (없으면 빈 리스트)
     employee_name_candidates = candidates.get("employee_names") or []
 
+    # 질문 텍스트 내에 명시적인 사번 패턴(예: 사번 정규식 매칭)이 있는지 추출
     explicit_employee_id = extract_employee_id(resolved_question)
     if explicit_employee_id:
         # 질문 안에 사번이 들어 있으면 task에도 다시 심어서 검색 기준을 고정한다.
         for task in tasks:
+            # task가 딕셔너리 형태이고 기존에 설정된 사번이 없다면 명시적 사번 주입
             if isinstance(task, dict) and not task.get("employee_id"):
                 task["employee_id"] = explicit_employee_id
 
+    # 여러 명의 직원 이름이 포함되어 있는 경우, 단일 조회(single_lookup) task를 직원별로 쪼갬
     tasks = split_single_lookup_tasks_by_employee_candidates(
         tasks=tasks,
         employee_names=employee_name_candidates,
@@ -374,7 +409,11 @@ def handle_rag_chat(question: str, employee_id: str) -> dict:
     # 2. 허용된 필드만 검색 대상으로 선택
     # 3. intent에 따라 직접 조회 또는 hybrid 검색 실행
     # 4. task별 답변 생성
+    
+    # 후보 단어(부서명, 직원명 등)가 하나라도 존재하는지 확인
     has_candidates = any(candidates.get(key) for key in candidates)
+    
+    # 인사(HR) 정보조회와 무관한 성격의 질문이거나, 컨텍스트가 전혀 없는 질문인지 필터링
     if (
         is_non_hr_task_result(tasks)
         or (
@@ -385,6 +424,7 @@ def handle_rag_chat(question: str, employee_id: str) -> dict:
             and not is_basic_profile_question(resolved_question)
         )
     ):
+        # HR 관련 질문이 아니라고 판단되면 기본 안내 메시지와 함께 즉시 응답 반환
         return {
             "success": True,
             "answer": NON_HR_QUESTION_MESSAGE,
@@ -396,6 +436,7 @@ def handle_rag_chat(question: str, employee_id: str) -> dict:
             "sources": [],
         }
 
+    # 분해된 각 task 리스트를 순회하며 개별 검색 및 답변 생성 알고리즘 실행 (리스트 컴프리헨션)
     task_results = [
         process_task(
             task=task,
@@ -405,6 +446,8 @@ def handle_rag_chat(question: str, employee_id: str) -> dict:
         )
         for task in tasks
     ]
+    
+    # 다중 이름 조회 시, 퇴사자 정보 노출을 제한해야 하는 비즈니스 규칙에 따라 결과 마스킹/숨김 처리
     task_results = suppress_hidden_retired_results_for_multi_name_query(
         task_results=task_results,
         employee_names=employee_name_candidates,
@@ -450,6 +493,7 @@ def handle_rag_chat(question: str, employee_id: str) -> dict:
     for result in task_results:
         sources.extend(result.get("sources", []))
 
+    # 데이터 정합성 검증을 위해 추출된 출처 데이터 중 상위 5개 미리보기 로그 출력
     print(
         "[DEBUG] source preview for verification:",
         json.dumps(sources[:5], ensure_ascii=False),
@@ -498,11 +542,13 @@ def handle_rag_chat(question: str, employee_id: str) -> dict:
         "model_type": get_active_llm_label(),
     }
 
+    # 보안이나 가독성을 위해 본문을 제외한 메타데이터만 디버그 로그로 기록
     print(
         "[DEBUG] response metadata without answer:",
         json.dumps(build_debug_response(full_response), ensure_ascii=False),
     )
 
+    # 외부(클라이언트)용으로 반환할 최종 권한 요약 데이터 생성
     public_permission = summarize_permission(
         task_results=task_results,
         permission_level=permission_level,
@@ -510,16 +556,19 @@ def handle_rag_chat(question: str, employee_id: str) -> dict:
     public_success = full_response["success"]
     public_answer = full_response["answer"]
 
+    # 만약 작업 수행에 실패했고 권한도 허용되지 않는 경우, 보안을 위해 에러 문구로 응답을 대체
     if not public_success and not public_permission.get("allowed"):
         public_answer = "요청하신 정보는 현재 권한으로 조회할 수 없습니다."
 
+    # 외부 클라이언트에 노출 가능한 정보망으로 구성된 public response 객체 조립
     public_response = {
         "success": public_success,
         "answer": public_answer,
         "permission": public_permission,
-        "sources": sanitize_sources(sources),
+        "sources": sanitize_sources(sources), # 민감 정보가 마스킹된 출처 데이터
     }
 
+    # 실패 케이스일 경우 대외용 표준 에러 객체 빌드 및 주입
     public_error = build_public_error(
         success=public_success,
         permission=public_permission,
@@ -528,6 +577,7 @@ def handle_rag_chat(question: str, employee_id: str) -> dict:
     if public_error:
         public_response["error"] = public_error
 
+    # 최종적으로 유저에게 나가는 완성형 답변 본문을 로그에 기록
     print("[ANSWER]", public_response["answer"])
 
     return public_response

@@ -55,11 +55,39 @@ cd Durian
 ---
 
 ## STEP 2 — OpenSearch 준비
+이 프로젝트는 OpenSearch를 검색 엔진으로 사용합니다. 
+OpenSearch 서버 자체는 자동 설치되지 않으므로 로컬에 직접 설치하고 실행해야 합니다.
+단, 한글 형태소 분석기인 **nori 플러그인**은 파이프라인 실행 시 자동 설치됩니다.
 
-`localhost:9200`에서 OpenSearch가 동작 중이어야 합니다.
+  권장 버전: OpenSearch 3.3.2
 
-> **nori 플러그인은 별도 설치 불필요** — 파이프라인 실행(STEP 7) 시 자동으로
-> 다운로드/설치해줍니다. 단, 설치 직후에는 OpenSearch를 한 번 재시작해야 합니다.
+  ### 1. OpenSearch 다운로드
+
+  OpenSearch 공식 다운로드 페이지에서 운영체제에 맞는 배포판을 다운로드합니다.
+   ```bash
+   https://opensearch.org/downloads.html
+   ``` 
+
+  압축을 해제한 뒤, 해당 경로를 .env의 OPENSEARCH_HOME에 설정합니다.
+   ```env
+   OPENSEARCH_HOME=C:\path\to\opensearch-3.3.2
+   ```
+
+  ### 2. OpenSearch 실행 (Window 기준)
+
+   ```bash
+    cd C:\path\to\opensearch-3.3.2
+    bin\opensearch.bat
+   ```
+
+  ### 3. 접속 확인
+
+   ```bash
+   curl.exe -k -u admin:비밀번호 https://localhost:9200
+   ```
+
+  정상 실행 중이면 OpenSearch 버전 정보가 출력됩니다.
+  ※ 최초 1회 파이프라인(STEP 7) 실행 시 nori 플러그인이 자동 설치되며, 설치가 완료되면 안내에 따라 OpenSearch 서버를 한 번 재시작해 주셔야 합니다.
 
 ---
 
@@ -103,32 +131,28 @@ cd Durian
 copy .env.example .env
 ```
 
-**Mac/Linux:**
-```bash
-cp .env.example .env
-```
 
 `.env`를 텍스트 편집기로 열고 **아래 항목을 본인 환경에 맞게 수정**합니다.
 
 > ⚠️ **수정 필수 항목** (그대로 두면 서버가 동작하지 않습니다)
 
 ```env
-# ┌─────────────────────────────────────────────────────────┐
+# ┌───────────────────────────────────────────────────────────┐
 # │  ★ 수정 필수 — OpenSearch 접속 정보                       │
-# └─────────────────────────────────────────────────────────┘
+# └───────────────────────────────────────────────────────────┘
 OPENSEARCH_HOST=localhost
 OPENSEARCH_PORT=9200
 OPENSEARCH_USER=admin          # ← 실제 계정으로 변경
 OPENSEARCH_PASSWORD=yourpw     # ← 실제 비밀번호로 변경
 
-# ┌─────────────────────────────────────────────────────────┐
-# │  ★ 수정 필수 — OpenSearch 설치 경로 (nori 자동 설치에 사용) │
-# └─────────────────────────────────────────────────────────┘
+# ┌───────────────────────────────────────────────────────────┐
+# │  ★ 수정 필수 — OpenSearch 설치 경로 (nori 자동 설치에 사용)│
+# └───────────────────────────────────────────────────────────┘
 OPENSEARCH_HOME=C:\path\to\opensearch   # ← 실제 설치 경로로 변경
 
-# ┌─────────────────────────────────────────────────────────┐
-# │  선택 수정 — LLM 설정                                     │
-# └─────────────────────────────────────────────────────────┘
+# ┌───────────────────────────────────────────────────────────┐
+# │  선택 수정 — LLM 설정                                      │
+# └───────────────────────────────────────────────────────────┘
 LLM_PROVIDER=ollama            # ollama 또는 openai
 OLLAMA_URL=http://localhost:11434/api/generate
 OLLAMA_MODEL=gemma3:4b
@@ -137,9 +161,9 @@ OLLAMA_MODEL=gemma3:4b
 # OPENAI_API_KEY=<OpenAI API 키>
 # OPENAI_MODEL=gpt-4o-mini
 
-# ┌─────────────────────────────────────────────────────────┐
-# │  선택 수정 — 임베딩/청킹 설정                              │
-# └─────────────────────────────────────────────────────────┘
+# ┌───────────────────────────────────────────────────────────┐
+# │  선택 수정 — 임베딩/청킹 설정                               │
+# └───────────────────────────────────────────────────────────┘
 EMBED_MODEL_NAME=paraphrase-multilingual-MiniLM-L12-v2
 EMBED_DIMENSION=384
 MAX_TOKENS=120
@@ -148,6 +172,13 @@ MAX_TOKENS=120
 ---
 
 ## STEP 6 — 의존성 설치 (최초 1회)
+
+**Python 가상환경 생성 및 활성화:**
+Windows 기준:
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+```
 
 **Python 의존성:**
 ```bash
@@ -245,15 +276,18 @@ http://localhost:3000
 | `hr_salary_2` | 2 | 잔업시간, 미사용휴가일수 |
 | `hr_salary_3` | 3 | 연봉, 급여은행, 계좌번호, 4대보험가입여부 |
 
-**접근 권한**: `permission_level = MAX(부서레벨, 직급레벨)`
-본인 데이터는 레벨 무관 전체 접근 가능.
+
+
+**접근 권한**: 사용자의 접근 권한은 부서 권한 레벨과 직급 권한 레벨 중 더 높은 값을 사용합니다.
+
+ `permission_level = MAX(부서레벨, 직급레벨)`본인 데이터는 레벨 무관 전체 접근 가능.
 
 ---
 
 ## 디렉터리 구조
 
 ```
-dma/
+Durian/
 ├── .env                    ← 환경 변수 (직접 생성, git 제외)
 ├── .env.example            ← 환경 변수 템플릿
 ├── pipeline.py             ← 전체 파이프라인 (1~3단계)
@@ -262,9 +296,17 @@ dma/
 ├── requirements.txt        ← Python 의존성
 ├── README.md
 │
-├── app/                    ← FastAPI 백엔드
-│   ├── main.py             ← API 엔드포인트 (/chat, /rag-chat)
-│   └── services/           ← 검색·LLM·질문 분석 로직
+├── app/
+│    ├─ main.py                         ← FastAPI 진입점, 라우팅, 요청 검증, 공통 예외 처리
+│    └─ services/
+│       ├─ rag_chat_service.py            ← /rag-chat 전체 처리 흐름
+│       ├─ llm_service.py                 ← Ollama/OpenAI LLM 호출
+│       ├─ hybrid_search_service.py       ← OpenSearch 검색 및 권한 기반 조회
+│       ├─ question_analyzer_service.py   ← 질문을 task로 분석
+│       ├─ task_processor_service.py      ← task별 검색/권한/답변 처리
+│       ├─ candidate_extractor_service.py ← 질문에서 직원명/부서/팀/직급/직책 후보 추출
+│       ├─ question_service.py            ← 질문 문자열에서 사번/이름/자기조회 여부 등 추출
+│       └─ session_service.py             ← 이전 질문 기억을 활용한 후속 질문 보정
 │
 ├── frontend/               ← 챗봇 UI
 │   ├── index.html          ← 메인 화면 (Alpine.js)
@@ -339,9 +381,9 @@ OpenSearch를 재시작한 후 `python pipeline.py`를 다시 실행하세요.
 |------|------|
 | 검색 엔진 | OpenSearch 3.3.2 + nori 플러그인 |
 | 임베딩 모델 | paraphrase-multilingual-MiniLM-L12-v2 (384차원) |
-| 검색 방식 | Hybrid Search (BM25 + KNN, lucene/hnsw/cosinesimil) |
+| 검색 방식 | Hybrid Search (BM25 + Vector Search + RRF, lucene/hnsw/cosinesimil) |
 | LLM | Ollama + gemma3:4b (기본) / OpenAI GPT (선택) |
-| 백엔드 | FastAPI (Python) |
+| 백엔드 | FastAPI (Python) + Uvicorn |
 | 프론트 서버 | Node.js + Express |
 | 프론트 UI | HTML + Alpine.js |
 | 데이터 처리 | pandas, sentence-transformers |
