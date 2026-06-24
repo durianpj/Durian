@@ -540,6 +540,16 @@ def handle_rag_chat(question: str, employee_id: str) -> dict:
 
         # 사용한 LLM 모델명
         "model_type": get_active_llm_label(),
+
+        # 검색 결과는 있었지만 퇴사자 정책으로 차단된 경우를 최종 응답까지 전달한다.
+        "blocked_reason": next(
+            (
+                result.get("blocked_reason")
+                for result in task_results
+                if result.get("blocked_reason")
+            ),
+            None,
+        ),
     }
 
     # 보안이나 가독성을 위해 본문을 제외한 메타데이터만 디버그 로그로 기록
@@ -557,8 +567,13 @@ def handle_rag_chat(question: str, employee_id: str) -> dict:
     public_answer = full_response["answer"]
 
     # 만약 작업 수행에 실패했고 권한도 허용되지 않는 경우, 보안을 위해 에러 문구로 응답을 대체
+    blocked_reason = full_response.get("blocked_reason")
+
     if not public_success and not public_permission.get("allowed"):
-        public_answer = "요청하신 정보는 현재 권한으로 조회할 수 없습니다."
+        if blocked_reason == "retired_employee":
+            public_answer = "퇴사자 정보는 관리자만 조회할 수 있습니다."
+        else:
+            public_answer = "요청하신 정보는 현재 권한으로 조회할 수 없습니다."
 
     # 외부 클라이언트에 노출 가능한 정보망으로 구성된 public response 객체 조립
     public_response = {

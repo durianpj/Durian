@@ -660,6 +660,60 @@ def get_user_permission_level(employee_id: str) -> int | None:
     return max(department_level, job_grade_level)
 
 
+def get_retired_employee_ids(employee_ids: list[str]) -> set[str]:
+    """
+    여러 사원의 퇴사 여부를 한 번의 OpenSearch 조회로 확인한다.
+
+    hr_basic_3 문서 중 퇴직일자가 실제 값으로 입력된 사번만 반환한다.
+    """
+
+    normalized_ids = list(
+        dict.fromkeys(
+            str(employee_id).strip().upper()
+            for employee_id in employee_ids
+            if employee_id
+        )
+    )
+
+    if not normalized_ids:
+        return set()
+
+    query = {
+        "query": {
+            "terms": {
+                "employee_id": normalized_ids
+            }
+        },
+        "size": min(max(len(normalized_ids) * 4, 100), 10000),
+        "_source": ["employee_id", "embedding_text"],
+    }
+
+    response = client.search(
+        index=["hr_basic_3"],
+        body=query,
+    )
+
+    retired_employee_ids = set()
+    missing_values = {"", "미입력", "NULL", "None", "none", "null", "-"}
+
+    for hit in response["hits"]["hits"]:
+        source = hit.get("_source", {})
+        employee_id = source.get("employee_id")
+        retirement_date = extract_embedding_text_field(
+            embedding_text=source.get("embedding_text", ""),
+            field_name="퇴직일자",
+        )
+
+        if (
+            employee_id
+            and retirement_date
+            and retirement_date.strip() not in missing_values
+        ):
+            retired_employee_ids.add(str(employee_id).strip().upper())
+
+    return retired_employee_ids
+
+
 def is_retired_employee(employee_id: str) -> bool:
     """
     요청자 사번이 퇴사자이면 True를 반환한다.
@@ -669,35 +723,8 @@ def is_retired_employee(employee_id: str) -> bool:
     if not employee_id:
         return False
 
-    query = {
-        "query": {
-            "bool": {
-                "filter": [
-                    {"term": {"employee_id": employee_id.strip().upper()}}
-                ]
-            }
-        },
-        "size": 1,
-        "_source": ["embedding_text"],
-    }
-
-    response = client.search(
-        index=["hr_basic_3"],
-        body=query,
-    )
-
-    hits = response["hits"]["hits"]
-
-    if not hits:
-        return False
-
-    source = hits[0].get("_source", {})
-    retirement_date = extract_embedding_text_field(
-        embedding_text=source.get("embedding_text", ""),
-        field_name="퇴직일자",
-    )
-
-    return bool(retirement_date and retirement_date.strip() not in {"미입력", "NULL", "None", "none", "null", "-"})
+    normalized_id = employee_id.strip().upper()
+    return normalized_id in get_retired_employee_ids([normalized_id])
 
 
 # =========================
@@ -1807,12 +1834,45 @@ def count_employees_by_conditions(
     print("[DEBUG] 직원 수 count indices:", indices)
     print("[DEBUG] 직원 수 count query:", query)
 
-    response = client.count(
-        index=indices,
-        body=query,
-    )
+    # 관리자 권한이면 OpenSearch count API로 바로 직원 수를 계산한다.
+    # 관리자는 퇴사자까지 볼 수 있으므로 별도 퇴사자 제외 처리를 하지 않는다.
+    if permission_level >= 3:
+        response = client.count(
+            index=indices,
+            body=query,
+        )
+        count = int(response.get("count", 0))
+    # 일반 사용자 권한이면 퇴사자를 제외해야 하므로 count API를 바로 쓰지 않는다.
+    else:
+        # 먼저 조건에 맞는 직원의 employee_id만 조회한다.
+        # _source를 employee_id로 제한해서 불필요한 개인정보 조회를 줄인다.
+        search_query = {
+            **query,
+            "size": 10000,
+            "_source": ["employee_id"],
+        }
+        response = client.search(
+            index=indices,
+            body=search_query,
+        )
 
-    count = int(response.get("count", 0))
+        # 검색 결과에서 employee_id만 꺼낸다.
+        # dict.fromkeys를 사용해서 employee_id 중복을 제거하고 순서는 유지한다.
+        employee_ids = list(
+            dict.fromkeys(
+                hit.get("_source", {}).get("employee_id")
+                for hit in response["hits"]["hits"]
+                if hit.get("_source", {}).get("employee_id")
+            )
+        )
+        # 검색된 직원들 중 퇴사자 employee_id 목록을 가져온다.
+        retired_employee_ids = get_retired_employee_ids(employee_ids)
+        # 일반 사용자는 퇴사자를 볼 수 없으므로 퇴사자를 제외하고 count한다.
+        count = sum(
+            1
+            for employee_id in employee_ids
+            if employee_id not in retired_employee_ids
+        )
 
     print("[DEBUG] 직원 수 count 결과:", count)
     print(f"[SEARCH] employee_count count={count}")

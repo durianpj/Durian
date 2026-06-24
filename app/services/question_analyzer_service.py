@@ -1185,27 +1185,49 @@ def analyze_question_to_tasks(question: str, candidates: dict | None = None) -> 
         사전/캐시 기반으로 질문에서 미리 감지한 후보:
         {candidate_context_text}
 
+        핵심 원칙:
+        - target_fields는 사용자가 답변으로 보고 싶은 필드다. 사용자가 답변으로 보고 싶어 하는 정보를 target_fields로 정한다.
+        - filters는 검색 대상을 줄이기 위한 조건이다.
+        - 필드 이름만 언급되면 target_fields에 넣고 filters에는 넣지 않는다.
+        - 필드 값이 조건으로 언급된 경우에만 filters에 넣는다.
+        - 사용자 질문 원문과 후보에 없는 값을 새로 만들지 않는다.
+        - 예시 안의 값은 참고용이며, 사용자 질문에 없는 값을 복사하지 않는다.
+        - 권한 판단은 하지 않는다.
+        - 사용 가능한 fields만 사용한다.
+        - 확실하지 않으면 target_fields=unknown 으로 둔다.
+        
+
         후보 사용 규칙:
         - 후보는 최종 정답이 아니라 intent/slot 판단을 돕는 힌트다.
         - employee_name 후보가 사용자 질문에 있으면 employee_name으로 우선 고려한다.
-        - department/team/job_grade/position 후보가 있으면 해당 slot과 filter에 우선 반영한다.
+        - department/team/job_grade/position 후보가 있으면 해당 slot과 filters 판단에 참고한다.
+        - business/domain term 후보는 기본적으로 target_fields 판단에만 참고한다.
+        - business/domain term만으로 filters를 만들지 않는다.
         - unknown organization candidates는 등록되지 않은 조직명이다. 이를 부분 단어로 나누어 department/team으로 만들지 않는다.
-        - business/domain term 후보는 target_fields와 filters 판단에 참고한다.
-        - 사용자 질문과 후보에 없는 값을 새로 만들지 않는다.
 
-        규칙:
+        
+        기본 출력 규칙:
         - 값이 없으면 NULL을 쓴다.
+        - filters는 사용자 질문에 검색 대상을 제한하는 조건값이 명확히 있을 때만 만든다.
+        - 같은 field라도 문맥에 따라 target_fields가 될 수도 있고 filters가 될 수도 있다.
         - target_fields가 여러 개면 쉼표로 구분한다.
         - filters가 없으면 NULL을 쓴다.
         - filters 형식은 field|op|value 이다.
         - filters가 여러 개면 세미콜론(;)으로 구분한다.
-        - is_self는 true 또는 false만 쓴다.
-        - target_fields는 사용자가 답변으로 보고 싶어 하는 필드다.
-        - filters는 검색 조건이며 답변 필드가 아니다.
-        - 권한 판단은 하지 않는다.
-        - 사용 가능한 fields만 사용한다.
-        - 확실하지 않으면 target_fields=unknown 으로 둔다.
         - filter op는 eq, contains, gt, gte, lt, lte, between, exists 중 하나만 사용한다.
+        - is_self는 true 또는 false만 쓴다.
+        - filters는 사용자가 질문에서 명확히 말한 조건만 넣는다. 절대 추측해서 넣지 않는다
+        - 확실하지 않으면 target_fields=unknown 으로 둔다.
+        - 권한 판단은 하지 않는다.
+        - filters는 검색 조건이며 답변 필드가 아니다.
+
+        target_fields / filters 구분:
+        - 예) "입사일 알려줘" → target_fields=hire_date, filters=NULL
+        - 예) "부서 알려줘" → target_fields=department, filters=NULL
+        - 예) "인사부 직원 알려줘" → target_fields=employee, department=인사부, filters=department|eq|인사부
+        - 예) "2024년에 입사한 사람" → target_fields=employee, filters=hire_date|contains|2024
+        - 예) "계약직 직원" → target_fields=employee, filters=contract_type|eq|계약직
+
 
         본인 질문 규칙:
         - "나", "내", "본인", "내이름", "me", "my"를 의미하면 is_self=true.
@@ -1298,6 +1320,9 @@ def analyze_question_to_tasks(question: str, candidates: dict | None = None) -> 
         is_self=false
 
         날짜/연도 조건 규칙:
+        - 연도, 월, 날짜가 사용자 질문 원문에 직접 나온 경우에만 날짜 filters를 만든다.
+        - 질문에 연도, 월, 날짜가 없으면 날짜 filters를 절대 만들지 않는다.
+        - "입사일", "퇴직일", "평가" 같은 날짜/연도 관련 필드명만 나온 경우는 filters가 아니라 target_fields로 판단한다.
 
         1. "2024년도", "2024년"처럼 특정 연도만 말하면 contains를 사용한다.
         예: "2024년도 입사자" → hire_date|contains|2024
@@ -1321,6 +1346,16 @@ def analyze_question_to_tasks(question: str, candidates: dict | None = None) -> 
         - 사용자가 "이전", "까지", "이하"라고 말하지 않았으면 lte를 쓰지 않는다.
         - 사용자가 "이후", "부터", "이상"이라고 말하지 않았으면 gte를 쓰지 않는다.
         - 단순히 "2024년도"라고만 말하면 반드시 contains를 사용한다.
+
+        최종 출력 전 검증:
+        - 사용자 질문 원문에 없는 숫자, 연도, 날짜, 이름, 부서명, 팀명, 직급명, 직책명을 새로 만들지 않는다.
+        - 사용자 질문 원문에 없는 값은 filters에 넣지 않는다.
+        - 후보에 있는 값이라도 사용자 질문의 의미와 맞지 않으면 filters에 넣지 않는다.
+        - 사용자가 어떤 정보를 "알려줘", "조회해줘", "뭐야"라고 물은 경우 그 정보는 filters가 아니라 target_fields다.
+        - 사용자가 어떤 값에 해당하는 직원을 찾는 경우에만 filters를 만든다.
+        - is_self=true이고 특정 직원 1명의 정보를 조회하는 질문이면 filters=NULL이다.
+        - employee_id가 명확해서 특정 직원 1명이 확정된 질문이면 filters=NULL이다.
+        - 예시 안에 나온 값은 참고용일 뿐이며, 사용자 질문에 없는 값을 출력에 복사하지 않는다.
 
     사용자 질문:
     {question}
@@ -1906,14 +1941,25 @@ def normalize_tasks(
 
         if task_is_self:
             employee_name = None
-            filters = [
-                item
-                for item in filters
-                if not is_self_placeholder_filter_value(
-                    item.get("field"),
-                    item.get("value"),
-                )
-            ]
+
+            # 본인 단일 정보 조회는 requester_employee_id로 이미 대상이 정해져 있다.
+            # 따라서 LLM이 잘못 만든 filters는 사용하지 않는다.
+            #
+            # 예:
+            # - 나의 계좌번호 알려줘 -> target_fields=account, filters=[]
+            # - 나의 입사일 알려줘 -> target_fields=hire_date, filters=[]
+            # - 내 이메일 알려줘 -> target_fields=email, filters=[]
+            if intent == "single_lookup":
+                filters = []
+            else:
+                filters = [
+                    item
+                    for item in filters
+                    if not is_self_placeholder_filter_value(
+                        item.get("field"),
+                        item.get("value"),
+                    )
+                ]
 
         # -------------------------
         # 6. 정규화된 task 추가

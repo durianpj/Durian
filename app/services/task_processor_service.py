@@ -30,6 +30,7 @@ from app.services.hybrid_search_service import (
     find_employee_name_in_question,
     get_allowed_field_value,
     get_category_values,
+    get_retired_employee_ids,
     is_retired_employee,
     make_sources,
     search_employees_by_conditions,
@@ -512,33 +513,54 @@ def limit_hits_by_employee_count(
 def filter_retired_hits_by_permission(
     hits: list[dict],
     permission_level: int,
-) -> list[dict]:
-    # 최고 관리자 권한(레벨 3 이상)인 경우, 퇴사자 검증 없이 모든 검색 결과(hits)를 그대로 반환
-    if permission_level >= 3:
-        return hits
+) -> tuple[list[dict], set[str]]:
+    """
+    검색 결과를 조회 가능한 문서와 숨겨진 퇴사자 사번으로 나눈다.
 
-    allowed_hits = []   # 권한 상 노출 가능한 결과만 담을 리스트
-    retired_cache = {}  # 동일 사원에 대한 퇴사 여부 반복 조회를 막기 위한 로컬 캐시 딕셔너리
+    원본 결과가 있었지만 모두 퇴사자라서 숨겨진 경우와 실제 검색 결과가
+    없었던 경우를 호출부에서 구분할 수 있도록 두 값을 함께 반환한다.
+    """
+
+    if permission_level >= 3:
+        return hits, set()
+
+    employee_ids = unique_keep_order(
+        [
+            hit.get("_source", {}).get("employee_id")
+            for hit in hits
+            if hit.get("_source", {}).get("employee_id")
+        ]
+    )
+    retired_employee_ids = get_retired_employee_ids(employee_ids)
+    visible_hits = []
 
     for hit in hits:
-        # 검색 결과 내에서 사원 ID(employee_id)를 안전하게 추출
         employee_id = hit.get("_source", {}).get("employee_id")
 
-        # 만약 결과에 사원 ID가 포함되어 있지 않다면, 사원 정보가 아닌 문서 등으로 판단하여 통과
-        if not employee_id:
-            allowed_hits.append(hit)
-            continue
+        if not employee_id or employee_id not in retired_employee_ids:
+            visible_hits.append(hit)
 
-        # 캐시에 해당 사원의 퇴사 여부 정보가 없다면, DB나 외부 함수(is_retired_employee)를 호출하여 캐시에 저장
-        if employee_id not in retired_cache:
-            retired_cache[employee_id] = is_retired_employee(employee_id)
+    return visible_hits, retired_employee_ids
 
-        # 퇴사한 사원이 아닌 경우에만(재직 중인 경우에만) 최종 결과 리스트에 추가
-        if not retired_cache[employee_id]:
-            allowed_hits.append(hit)
 
-    # 필터링이 완료된 안전한 검색 결과 리스트 반환
-    return allowed_hits
+def build_retired_employee_restricted_result(
+    permission_level: int,
+    answer_fields: list[str],
+    is_self: bool,
+) -> dict:
+    return {
+        "answer": RETIRED_EMPLOYEE_RESTRICTED_MESSAGE,
+        "sources": [],
+        "blocked_reason": "retired_employee",
+        "permission": {
+            "allowed": False,
+            "permission_level": permission_level,
+            "required_level": 3,
+            "allowed_fields": [],
+            "denied_fields": answer_fields,
+            "is_self": is_self,
+        },
+    }
 
 
 def format_allowed_hits_answer(
@@ -1518,18 +1540,11 @@ def process_task(
         and permission_level < 3
         and is_retired_employee(search_employee_id)
     ):
-        return {
-            "answer": RETIRED_EMPLOYEE_RESTRICTED_MESSAGE,
-            "sources": [],
-            "permission": {
-                "allowed": False,
-                "permission_level": permission_level,
-                "required_level": 3,
-                "allowed_fields": [],
-                "denied_fields": answer_fields,
-                "is_self": is_self,
-            },
-        }
+        return build_retired_employee_restricted_result(
+            permission_level=permission_level,
+            answer_fields=answer_fields,
+            is_self=is_self,
+        )
 
     search_filters = filters
     if search_employee_id and intent == "single_lookup":
@@ -1647,12 +1662,19 @@ def process_task(
             position=task.get("position"),
             size=10000,
         )
-        search_hits = filter_retired_hits_by_permission(
+        search_hits, hidden_retired_ids = filter_retired_hits_by_permission(
             hits=search_hits,
             permission_level=permission_level,
         )
 
-        # 실제 사용자에게 보여줄 답변 문자열로 변환한다. 
+        if not search_hits and hidden_retired_ids:
+            return build_retired_employee_restricted_result(
+                permission_level=permission_level,
+                answer_fields=answer_fields,
+                is_self=is_self,
+            )
+
+        # 실제 사용자에게 보여줄 답변 문자열로 변환한다.
         answer = format_allowed_hits_answer(
             hits=search_hits,
             allowed_fields=allowed_fields,
@@ -1701,12 +1723,18 @@ def process_task(
             answer_fields=answer_fields,
         )
         search_hits = sort_hits_by_task_sort(search_hits, sort)
-        search_hits = filter_retired_hits_by_permission(
+        search_hits, hidden_retired_ids = filter_retired_hits_by_permission(
             hits=search_hits,
             permission_level=permission_level,
         )
 
         if not search_hits:
+            if hidden_retired_ids:
+                return build_retired_employee_restricted_result(
+                    permission_level=permission_level,
+                    answer_fields=answer_fields,
+                    is_self=is_self,
+                )
             answer = NO_SEARCH_RESULT_MESSAGE
         else:
             answer = format_allowed_hits_answer(
@@ -1754,30 +1782,17 @@ def process_task(
             hits=search_hits,
             answer_fields=answer_fields,
         )
-        visible_hits = filter_retired_hits_by_permission(
+        visible_hits, hidden_retired_ids = filter_retired_hits_by_permission(
             hits=search_hits,
             permission_level=permission_level,
         )
 
-        if (
-            search_employee_name
-            and not search_employee_id
-            and permission_level < 3
-            and search_hits
-            and not visible_hits
-        ):
-            return {
-                "answer": RETIRED_EMPLOYEE_RESTRICTED_MESSAGE,
-                "sources": [],
-                "permission": {
-                    "allowed": False,
-                    "permission_level": permission_level,
-                    "required_level": 3,
-                    "allowed_fields": [],
-                    "denied_fields": answer_fields,
-                    "is_self": is_self,
-                },
-            }
+        if search_hits and not visible_hits and hidden_retired_ids:
+            return build_retired_employee_restricted_result(
+                permission_level=permission_level,
+                answer_fields=answer_fields,
+                is_self=is_self,
+            )
 
         search_hits = visible_hits
         search_hits = sort_hits_by_task_sort(search_hits, sort)
