@@ -727,6 +727,40 @@ def is_retired_employee(employee_id: str) -> bool:
     return normalized_id in get_retired_employee_ids([normalized_id])
 
 
+def get_employee_ids_by_name(employee_name: str) -> list[str]:
+    """
+    정확히 일치하는 직원 이름의 사번 목록을 반환한다.
+
+    퇴사자 안내를 필드 권한 안내보다 먼저 판단할 때 사용한다.
+    """
+
+    if not employee_name:
+        return []
+
+    query = {
+        "query": {
+            "match_phrase": {
+                "employee_name": employee_name.strip()
+            }
+        },
+        "size": 10000,
+        "_source": ["employee_id"],
+    }
+
+    response = client.search(
+        index=["hr_basic_1"],
+        body=query,
+    )
+
+    return list(
+        dict.fromkeys(
+            hit.get("_source", {}).get("employee_id")
+            for hit in response["hits"]["hits"]
+            if hit.get("_source", {}).get("employee_id")
+        )
+    )
+
+
 # =========================
 # 질문 기반 검색 인덱스 선택 함수
 # =========================

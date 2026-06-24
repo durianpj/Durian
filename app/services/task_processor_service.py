@@ -30,8 +30,8 @@ from app.services.hybrid_search_service import (
     find_employee_name_in_question,
     get_allowed_field_value,
     get_category_values,
+    get_employee_ids_by_name,
     get_retired_employee_ids,
-    is_retired_employee,
     make_sources,
     search_employees_by_conditions,
     search_employees_by_filter_conditions,
@@ -521,9 +521,6 @@ def filter_retired_hits_by_permission(
     없었던 경우를 호출부에서 구분할 수 있도록 두 값을 함께 반환한다.
     """
 
-    if permission_level >= 3:
-        return hits, set()
-
     employee_ids = unique_keep_order(
         [
             hit.get("_source", {}).get("employee_id")
@@ -532,6 +529,10 @@ def filter_retired_hits_by_permission(
         ]
     )
     retired_employee_ids = get_retired_employee_ids(employee_ids)
+
+    if permission_level >= 3:
+        return hits, retired_employee_ids
+
     visible_hits = []
 
     for hit in hits:
@@ -539,6 +540,64 @@ def filter_retired_hits_by_permission(
 
         if not employee_id or employee_id not in retired_employee_ids:
             visible_hits.append(hit)
+
+    return visible_hits, retired_employee_ids
+
+
+def annotate_retired_employee_labels(
+    hits: list[dict],
+    retired_employee_ids: set[str],
+    permission_level: int,
+) -> list[dict]:
+    """
+    Level 3 조회 결과의 퇴사자 이름에만 '(퇴사자)' 표시를 붙인다.
+
+    검색 결과 복사본만 수정하므로 OpenSearch 원본과 검색 조건에는 영향이 없다.
+    """
+
+    if permission_level < 3 or not retired_employee_ids:
+        return hits
+
+    annotated_hits = []
+
+    for hit in hits:
+        source = hit.get("_source", {})
+        employee_id = source.get("employee_id")
+        employee_name = source.get("employee_name")
+
+        if employee_id in retired_employee_ids and employee_name:
+            copied_hit = hit.copy()
+            copied_source = source.copy()
+
+            if not str(employee_name).endswith("(퇴사자)"):
+                copied_source["employee_name"] = f"{employee_name}(퇴사자)"
+
+            copied_hit["_source"] = copied_source
+            annotated_hits.append(copied_hit)
+            continue
+
+        annotated_hits.append(hit)
+
+    return annotated_hits
+
+
+def apply_retired_employee_visibility(
+    hits: list[dict],
+    permission_level: int,
+) -> tuple[list[dict], set[str]]:
+    """
+    퇴사자 노출 정책과 Level 3 표시 정책을 검색 경로와 무관하게 한 번에 적용한다.
+    """
+
+    visible_hits, retired_employee_ids = filter_retired_hits_by_permission(
+        hits=hits,
+        permission_level=permission_level,
+    )
+    visible_hits = annotate_retired_employee_labels(
+        hits=visible_hits,
+        retired_employee_ids=retired_employee_ids,
+        permission_level=permission_level,
+    )
 
     return visible_hits, retired_employee_ids
 
@@ -1380,6 +1439,25 @@ def process_task(
                 },
             }
 
+    # 특정 직원이 모두 퇴사자인 경우에는 요청 필드의 권한보다 퇴사자 정책을 먼저 안내한다.
+    if permission_level < 3 and not is_self and not requested_employee_collection:
+        target_employee_ids = []
+
+        if task.get("employee_id"):
+            target_employee_ids = [str(task["employee_id"]).strip().upper()]
+        elif task.get("employee_name"):
+            target_employee_ids = get_employee_ids_by_name(task["employee_name"])
+
+        if target_employee_ids:
+            retired_employee_ids = get_retired_employee_ids(target_employee_ids)
+
+            if retired_employee_ids.issuperset(target_employee_ids):
+                return build_retired_employee_restricted_result(
+                    permission_level=permission_level,
+                    answer_fields=target_fields,
+                    is_self=is_self,
+                )
+
     # 답변 필드뿐 아니라 조건 필드까지 포함해서 필요한 권한 레벨을 계산한다.
     search_related_fields = unique_keep_order(target_fields + filter_fields + sort_fields)
     # target_fields는 사용자에게 보여줄 필드, filter_fields는 검색 조건으로 필요한 필드다. 둘 다 권한 판단에 필요하다.
@@ -1534,18 +1612,6 @@ def process_task(
     else:
         search_employee_id = extract_employee_id(original_question)
 
-    if (
-        search_employee_id
-        and search_employee_id != requester_employee_id
-        and permission_level < 3
-        and is_retired_employee(search_employee_id)
-    ):
-        return build_retired_employee_restricted_result(
-            permission_level=permission_level,
-            answer_fields=answer_fields,
-            is_self=is_self,
-        )
-
     search_filters = filters
     if search_employee_id and intent == "single_lookup":
         # 사번이 확정되면 이름/직함 같은 보조 필터는 빼고 사번 기준으로만 조회한다.
@@ -1662,7 +1728,7 @@ def process_task(
             position=task.get("position"),
             size=10000,
         )
-        search_hits, hidden_retired_ids = filter_retired_hits_by_permission(
+        search_hits, hidden_retired_ids = apply_retired_employee_visibility(
             hits=search_hits,
             permission_level=permission_level,
         )
@@ -1723,7 +1789,7 @@ def process_task(
             answer_fields=answer_fields,
         )
         search_hits = sort_hits_by_task_sort(search_hits, sort)
-        search_hits, hidden_retired_ids = filter_retired_hits_by_permission(
+        search_hits, hidden_retired_ids = apply_retired_employee_visibility(
             hits=search_hits,
             permission_level=permission_level,
         )
@@ -1782,7 +1848,7 @@ def process_task(
             hits=search_hits,
             answer_fields=answer_fields,
         )
-        visible_hits, hidden_retired_ids = filter_retired_hits_by_permission(
+        visible_hits, hidden_retired_ids = apply_retired_employee_visibility(
             hits=search_hits,
             permission_level=permission_level,
         )

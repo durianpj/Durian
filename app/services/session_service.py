@@ -1,4 +1,5 @@
 import json
+import re
 
 from common.hr_master_data import DEPARTMENTS, JOB_GRADES, POSITIONS, TEAMS
 from app.services.hybrid_search_service import employee_name_exists
@@ -74,6 +75,111 @@ NOT_TARGET_NAMES = {
     "사번",
     "사원번호",
 }
+
+FOLLOWUP_FIELD_KEYWORDS = [
+    "사원번호",
+    "사번",
+    "이름",
+    "성별",
+    "나이",
+    "생년월일",
+    "주민등록번호",
+    "주민번호",
+    "병역",
+    "입사일",
+    "근속기간",
+    "학력",
+    "출신대학",
+    "학점",
+    "채용경로",
+    "계약형태",
+    "이전직장",
+    "회사명",
+    "사업장",
+    "부서",
+    "팀",
+    "직급",
+    "직책",
+    "퇴직구분",
+    "퇴직일자",
+    "이메일",
+    "메일",
+    "전화번호",
+    "연락처",
+    "주소",
+    "연봉",
+    "월급",
+    "급여",
+    "잔업시간",
+    "휴가",
+    "급여은행",
+    "계좌번호",
+    "보험",
+    "성과점수",
+    "평가",
+    "고과",
+    "자격증",
+    "토익",
+    "포상",
+    "징계",
+]
+
+
+def is_field_only_followup_question(question: str) -> bool:
+    """
+    대상 없이 HR 필드 하나만 이어서 묻는 짧은 후속 질문인지 확인한다.
+
+    예:
+    - 입사일은?
+    - 연봉은?
+    - 직책은?
+    """
+
+    if not question or is_self_question(question) or has_explicit_target(question):
+        return False
+
+    compact_question = compact_text(question)
+
+    if not compact_question:
+        return False
+
+    # 직원 목록·조건 검색 표현이 있으면 특정 직원 후속 질문으로 보지 않는다.
+    collection_keywords = [
+        "직원",
+        "사원",
+        "사람",
+        "목록",
+        "리스트",
+        "종류",
+        "몇명",
+        "인원",
+        "찾아줘",
+        "검색",
+    ]
+    if any(keyword in compact_question for keyword in collection_keywords):
+        return False
+
+    request_words = [
+        "알려줘",
+        "보여줘",
+        "조회해줘",
+        "뭐야",
+        "무엇이야",
+        "어때",
+    ]
+    normalized_question = compact_question
+
+    for word in request_words:
+        normalized_question = normalized_question.replace(word, "")
+
+    normalized_question = normalized_question.rstrip("?!.")
+    normalized_question = re.sub(
+        r"(은|는|이|가|을|를|도)$",
+        "",
+        normalized_question,
+    )
+
+    return normalized_question in FOLLOWUP_FIELD_KEYWORDS
 
 
 def has_explicit_target(question: str) -> bool:
@@ -371,6 +477,17 @@ def resolve_question_with_memory(question: str, requester_employee_id: str) -> s
     # 질문에 이미 대상이 있으면 메모리를 붙이지 않는다.
     if has_explicit_target(question):
         return question
+
+    memory = conversation_memory.get(requester_employee_id, {})
+    employee_target = (
+        memory.get("last_employee_id")
+        or memory.get("last_employee_name")
+    )
+
+    # 필드명만 있는 짧은 후속 질문은 LLM 판단보다 이전 직원 대상을 우선한다.
+    # 명시적인 본인 표현은 위에서 이미 제외했으므로 requester로 바뀌지 않는다.
+    if employee_target and is_field_only_followup_question(question):
+        return f"{employee_target} {remove_followup_reference(question)}"
 
     memory_scope = should_apply_memory_with_llm(question, requester_employee_id)
 

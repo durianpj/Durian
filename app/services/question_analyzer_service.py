@@ -1802,6 +1802,21 @@ def normalize_tasks(
             intent = "employee_list"
             safe_fields = ["employee"]
 
+        # 직원 이름이나 사번이 명시된 필드 조회를 LLM이 category_list로
+        # 잘못 분류한 경우 특정 직원 단일 조회로 되돌린다.
+        if (
+            intent == "category_list"
+            and not requested_category_list
+            and safe_fields != ["unknown"]
+            and (
+                task.get("employee_name")
+                or task.get("employee_id")
+                or extract_employee_name(question)
+                or extract_employee_id(question)
+            )
+        ):
+            intent = "single_lookup"
+
         # filters가 있는데 intent가 unknown이면
         # 조건 검색으로 볼 수 있으므로 condition_search로 보정한다.
         #
