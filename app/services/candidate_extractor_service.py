@@ -274,6 +274,48 @@ def _find_terms_in_question(question: str, terms: list[str]) -> list[str]:
     return matched
 
 
+def _value_appears_outside_container_terms(
+    question: str,
+    value: str,
+    container_terms: list[str],
+) -> bool:
+    compact_question = compact_text(question)
+    compact_value = compact_text(value)
+
+    if not compact_question or not compact_value:
+        return False
+
+    container_spans = []
+
+    for term in container_terms:
+        compact_term = compact_text(term)
+
+        if (
+            not compact_term
+            or compact_term == compact_value
+            or compact_value not in compact_term
+        ):
+            continue
+
+        start = compact_question.find(compact_term)
+
+        while start != -1:
+            container_spans.append((start, start + len(compact_term)))
+            start = compact_question.find(compact_term, start + 1)
+
+    start = compact_question.find(compact_value)
+
+    while start != -1:
+        end = start + len(compact_value)
+
+        if not any(span_start <= start and end <= span_end for span_start, span_end in container_spans):
+            return True
+
+        start = compact_question.find(compact_value, start + 1)
+
+    return False
+
+
 def _find_unknown_org_candidates(question: str, known_org_terms: set[str]) -> list[str]:
     """
     기준 데이터에는 없지만 조직명처럼 보이는 후보를 찾는다.
@@ -369,7 +411,16 @@ def extract_question_candidates(question: str) -> dict:
     )
 
     # 질문 안에서 직급 후보 찾기
-    job_grades = _find_terms_in_question(question, JOB_GRADES)
+    field_terms = _get_field_terms()
+    job_grades = [
+        job_grade
+        for job_grade in _find_terms_in_question(question, JOB_GRADES)
+        if _value_appears_outside_container_terms(
+            question=question,
+            value=job_grade,
+            container_terms=field_terms,
+        )
+    ]
 
     # 질문 안에서 직책 후보 찾기
     positions = _find_terms_in_question(question, POSITIONS)
@@ -390,7 +441,7 @@ def extract_question_candidates(question: str) -> dict:
     dictionary_terms = []
 
     candidate_terms = _unique_keep_order(
-        _get_field_terms() + _read_user_dictionary_terms()
+        field_terms + _read_user_dictionary_terms()
     )
 
     for term in _find_terms_in_question(question, candidate_terms):

@@ -297,7 +297,75 @@ def build_fallback_analysis(question: str) -> dict:
     }
 
 
-def find_known_value(question: str, values: list[str]) -> str | None:
+def value_appears_outside_container_terms(
+    question: str,
+    value: str,
+    container_terms: list[str],
+) -> bool:
+    """
+    값이 질문에 등장하더라도 "사원번호" 같은 필드 라벨 내부에만 있으면
+    조건값으로 보지 않는다.
+    """
+
+    compact_question = compact_text(question)
+    compact_value = compact_text(value)
+
+    if not compact_question or not compact_value:
+        return False
+
+    container_spans = []
+
+    for term in container_terms:
+        compact_term = compact_text(term)
+
+        if (
+            not compact_term
+            or compact_term == compact_value
+            or compact_value not in compact_term
+        ):
+            continue
+
+        start = compact_question.find(compact_term)
+
+        while start != -1:
+            container_spans.append((start, start + len(compact_term)))
+            start = compact_question.find(compact_term, start + 1)
+
+    start = compact_question.find(compact_value)
+
+    while start != -1:
+        end = start + len(compact_value)
+
+        if not any(span_start <= start and end <= span_end for span_start, span_end in container_spans):
+            return True
+
+        start = compact_question.find(compact_value, start + 1)
+
+    return False
+
+
+def get_field_label_terms() -> list[str]:
+    terms = []
+
+    for field_key, rule in FIELD_RULES.items():
+        terms.append(field_key)
+
+        label = rule.get("label")
+        if label:
+            terms.append(label)
+
+        embedding_label = rule.get("embedding_label")
+        if embedding_label:
+            terms.append(embedding_label)
+
+    return unique_keep_order(terms)
+
+
+def find_known_value(
+    question: str,
+    values: list[str],
+    ignored_container_terms: list[str] | None = None,
+) -> str | None:
     """
     질문 안에서 미리 정의된 부서/팀/직책 값을 찾는다.
     이건 조건 하드코딩이 아니라 조직 기준값 보정이다.
@@ -306,7 +374,14 @@ def find_known_value(question: str, values: list[str]) -> str | None:
     compact_question = compact_text(question)
 
     for value in values:
-        if value in compact_question:
+        if value in compact_question and (
+            not ignored_container_terms
+            or value_appears_outside_container_terms(
+                question=question,
+                value=value,
+                container_terms=ignored_container_terms,
+            )
+        ):
             return value
 
     return None
@@ -857,6 +932,11 @@ def normalize_target_fields_by_question(
         if explicit_evaluation_fields
         else get_evaluation_field_from_question(compact_question)
     )
+    salary_keywords = ["연봉"]
+
+    if "급여은행" not in compact_question:
+        salary_keywords.append("급여")
+
     detected_fields = []
 
     keyword_to_field = [
@@ -866,7 +946,9 @@ def normalize_target_fields_by_question(
         (["이메일", "메일"], "email"),
         (["전화번호", "연락처", "휴대폰", "핸드폰"], "phone"),
         (["주소"], "address"),
-        (["연봉", "급여"], "salary"),
+        (["급여은행"], "salary_bank"),
+        (["4대보험가입여부", "4대보험", "보험가입여부", "보험여부"], "insurance"),
+        (salary_keywords, "salary"),
         (["계좌번호", "계좌"], "account"),
         (["부서"], "department"),
         (["팀"], "team"),
@@ -903,7 +985,7 @@ def normalize_target_fields_by_question(
     )
 
     if detected_fields:
-        normalized_fields = detected_fields
+        normalized_fields = unique_keep_order(normalized_fields + detected_fields)
     else:
         normalized_fields = [
             "employee" if field == "employee_name" else field
@@ -1199,7 +1281,7 @@ def analyze_question_to_tasks(question: str, candidates: dict | None = None) -> 
 
         후보 사용 규칙:
         - 후보는 최종 정답이 아니라 intent/slot 판단을 돕는 힌트다.
-        - employee_name 후보가 사용자 질문에 있으면 employee_name으로 우선 고려한다.
+        - employee_name candidates에 있는 이름이 사용자 질문 원문에 그대로 포함되어 있으면 반드시 employee_name에 넣는다.
         - department/team/job_grade/position 후보가 있으면 해당 slot과 filters 판단에 참고한다.
         - business/domain term 후보는 기본적으로 target_fields 판단에만 참고한다.
         - business/domain term만으로 filters를 만들지 않는다.
@@ -1482,7 +1564,11 @@ def normalize_tasks(
     found_team = find_known_value(question, TEAMS)
 
     # 질문 문장에 실제 직급명이 있는지 찾는다.
-    found_job_grade = find_known_value(question, JOB_GRADES)
+    found_job_grade = find_known_value(
+        question,
+        JOB_GRADES,
+        ignored_container_terms=get_field_label_terms(),
+    )
 
     # 질문 문장에 실제 직책명이 있는지 찾는다.
     found_position = find_known_value(question, POSITIONS)
@@ -1918,6 +2004,7 @@ def normalize_tasks(
             and not task_is_self
             and not employee_name
             and not employee_id
+            and not (department or team or job_grade or position or filters or unknown_org_candidates)
         ):
             guessed_name = extract_employee_name(question)
 

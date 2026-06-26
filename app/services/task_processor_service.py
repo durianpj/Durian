@@ -1332,7 +1332,15 @@ def process_task(
         and not requested_employee_collection
         and not bool(task.get("is_self", False))
     ):
-        if not task.get("employee_name") and not task.get("employee_id") and not task.get("job_grade"):
+        if (
+            not task.get("employee_name")
+            and not task.get("employee_id")
+            and not task.get("department")
+            and not task.get("team")
+            and not task.get("job_grade")
+            and not task.get("position")
+            and not filters
+        ):
             guessed_name = extract_employee_name(original_question)
 
             if guessed_name:
@@ -1344,7 +1352,10 @@ def process_task(
         and not filters
         and not task.get("employee_name")
         and not task.get("employee_id")
+        and not task.get("department")
+        and not task.get("team")
         and not task.get("job_grade")
+        and not task.get("position")
     ):
         guessed_name = extract_employee_name(original_question)
 
@@ -1401,7 +1412,15 @@ def process_task(
 
     # 단일 직원 조회에서 LLM이 이름을 놓친 경우에만 정규식 기반 이름 추출로 보완한다.
     if intent == "single_lookup" and not requested_employee_collection and not is_self:
-        if not task.get("employee_name") and not task.get("employee_id") and not task.get("job_grade"):
+        if (
+            not task.get("employee_name")
+            and not task.get("employee_id")
+            and not task.get("department")
+            and not task.get("team")
+            and not task.get("job_grade")
+            and not task.get("position")
+            and not filters
+        ):
             guessed_name = extract_employee_name(original_question)
 
             if guessed_name:
@@ -1415,6 +1434,8 @@ def process_task(
         and not actual_employee_name
         and not requested_employee_collection
         and not is_self
+        and not has_explicit_target
+        and not filters
         and not task.get("employee_id")
         and (
             not task.get("employee_name")
@@ -1575,7 +1596,15 @@ def process_task(
         answer_fields = unique_keep_order(answer_fields + basic_profile_fields)
         denied_message = ""
 
-    allowed_fields = list(answer_fields)
+    display_condition_fields = []
+    if intent in {"condition_search", "employee_list"} and "employee" in answer_fields:
+        display_condition_fields = [
+            field
+            for field in allowed_filter_fields
+            if field not in {"employee_name"}
+        ]
+
+    allowed_fields = unique_keep_order(answer_fields + display_condition_fields)
     context_fields = unique_keep_order(answer_fields + allowed_filter_fields + sort_fields)
 
     if intent in {"single_lookup", "employee_list", "employee_count", "condition_search"}:
