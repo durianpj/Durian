@@ -140,11 +140,21 @@ client = OpenSearch(
 # 같은 모델을 사용해야 벡터 차원이 맞다.
 MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
+# CUDA를 사용할 수 있으면 GPU에서 임베딩하고, 없으면 CPU로 실행한다.
+HAS_CUDA = torch.cuda.is_available()
+EMBEDDING_DEVICE = torch.device("cuda" if HAS_CUDA else "cpu")
+EMBEDDING_DTYPE = torch.float16 if HAS_CUDA else torch.float32
+
 # tokenizer: 문장을 모델이 이해할 수 있는 숫자 토큰으로 변환
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
 # embedding_model: 토큰을 실제 벡터로 변환하는 모델
-embedding_model = AutoModel.from_pretrained(MODEL_NAME)
+embedding_model = AutoModel.from_pretrained(
+    MODEL_NAME,
+    torch_dtype=EMBEDDING_DTYPE,
+).to(EMBEDDING_DEVICE)
+embedding_model.eval()
+print(f"[INFO] embedding model device: {EMBEDDING_DEVICE}")
 
 
 # =========================
@@ -615,6 +625,10 @@ def create_question_vector(question):
 
     # 질문 문장을 토큰 형태로 변환한다.
     inputs = tokenizer(question, padding=True, truncation=True, return_tensors="pt")
+    inputs = {
+        key: value.to(EMBEDDING_DEVICE)
+        for key, value in inputs.items()
+    }
 
     # 검색용 임베딩 생성이므로 학습은 하지 않는다.
     # torch.no_grad()를 쓰면 메모리 사용이 줄어든다.
@@ -641,7 +655,7 @@ def create_question_vector(question):
     ) / torch.clamp(input_mask_expanded.sum(dim=1), min=1e-9)
 
     # OpenSearch에 보낼 수 있도록 tensor를 Python list로 변환한다.
-    vector = sentence_embedding[0].tolist()
+    vector = sentence_embedding[0].detach().cpu().tolist()
 
     return vector
 
@@ -790,6 +804,36 @@ def get_employee_ids_by_name(employee_name: str) -> list[str]:
             if hit.get("_source", {}).get("employee_id")
         )
     )
+
+
+def get_employee_name_by_id(employee_id: str) -> str | None:
+    """
+    사번으로 기본 인사정보의 직원 이름을 조회한다.
+    """
+
+    if not employee_id:
+        return None
+
+    query = {
+        "query": {
+            "term": {
+                "employee_id": employee_id.strip().upper()
+            }
+        },
+        "size": 1,
+        "_source": ["employee_name"],
+    }
+
+    response = client.search(
+        index=["hr_basic_1"],
+        body=query,
+    )
+    hits = response.get("hits", {}).get("hits", [])
+
+    if not hits:
+        return None
+
+    return hits[0].get("_source", {}).get("employee_name")
 
 
 # =========================

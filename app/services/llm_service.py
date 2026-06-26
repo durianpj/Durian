@@ -98,6 +98,7 @@ def call_ollama_completion(
             "model": OLLAMA_MODEL,
             "prompt": prompt,
             "stream": False,
+            "think": False,
             "options": options,
         },
         timeout=timeout,

@@ -68,6 +68,30 @@ def is_all_employee_query(question: str) -> bool:
     return any(keyword in compact_question for keyword in all_employee_keywords)
 
 
+def is_org_work_owner_query(question: str) -> bool:
+    """
+    "인사 업무 담당자는 누구야"처럼 조직/업무 담당자를 묻는 질문은
+    앞부분을 사람 이름으로 추정하면 안 된다.
+    """
+
+    if not question:
+        return False
+
+    compact_question = compact_text(question)
+    org_keywords = set(DEPARTMENTS + TEAMS)
+
+    for department in DEPARTMENTS:
+        org_keywords.add(department.removesuffix("부"))
+
+    org_keywords.update(["영업", "개발", "인사", "기획", "마케팅", "채용"])
+
+    return (
+        any(compact_question.startswith(keyword) for keyword in org_keywords if keyword)
+        and "업무" in compact_question
+        and any(keyword in compact_question for keyword in ["담당", "담당자", "누구"])
+    )
+
+
 def extract_name_like_prefix(question: str) -> str | None:
     """
     "홍길동 연봉", "없는사람 연봉"처럼 필드명 앞에 붙은 2~4글자 대상 후보를 찾는다.
@@ -75,6 +99,12 @@ def extract_name_like_prefix(question: str) -> str | None:
     """
 
     if not question:
+        return None
+
+    if is_all_employee_query(question):
+        return None
+
+    if is_org_work_owner_query(question):
         return None
 
     compact_question = compact_text(question)
@@ -92,6 +122,8 @@ def extract_name_like_prefix(question: str) -> str | None:
         "전화번호",
         "연락처",
         "주소",
+        "담당업무",
+        "이전담당업무",
         "연봉",
         "급여",
         "평가",
@@ -158,11 +190,11 @@ def is_employee_collection_query(question: str) -> bool:
 
     compact_question = compact_text(question)
 
-    if extract_name_like_prefix(question):
-        return False
-
     if is_all_employee_query(question):
         return True
+
+    if extract_name_like_prefix(question):
+        return False
 
     collection_keywords = [
         "직원보여줘",
@@ -248,6 +280,9 @@ def extract_employee_name(question: str) -> str | None:
     """
 
     if not question:
+        return None
+
+    if is_org_work_owner_query(question):
         return None
 
     name_like_prefix = extract_name_like_prefix(question)
