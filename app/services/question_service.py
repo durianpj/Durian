@@ -101,6 +101,9 @@ def extract_name_like_prefix(question: str) -> str | None:
     if not question:
         return None
 
+    if is_all_employee_query(question):
+        return None
+
     if is_org_work_owner_query(question):
         return None
 
@@ -119,6 +122,8 @@ def extract_name_like_prefix(question: str) -> str | None:
         "전화번호",
         "연락처",
         "주소",
+        "담당업무",
+        "이전담당업무",
         "연봉",
         "급여",
         "평가",
@@ -185,11 +190,11 @@ def is_employee_collection_query(question: str) -> bool:
 
     compact_question = compact_text(question)
 
-    if extract_name_like_prefix(question):
-        return False
-
     if is_all_employee_query(question):
         return True
+
+    if extract_name_like_prefix(question):
+        return False
 
     collection_keywords = [
         "직원보여줘",

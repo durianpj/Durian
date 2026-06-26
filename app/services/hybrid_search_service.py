@@ -141,13 +141,18 @@ client = OpenSearch(
 MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
 # CUDA를 사용할 수 있으면 GPU에서 임베딩하고, 없으면 CPU로 실행한다.
-EMBEDDING_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+HAS_CUDA = torch.cuda.is_available()
+EMBEDDING_DEVICE = torch.device("cuda" if HAS_CUDA else "cpu")
+EMBEDDING_DTYPE = torch.float16 if HAS_CUDA else torch.float32
 
 # tokenizer: 문장을 모델이 이해할 수 있는 숫자 토큰으로 변환
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
 # embedding_model: 토큰을 실제 벡터로 변환하는 모델
-embedding_model = AutoModel.from_pretrained(MODEL_NAME).to(EMBEDDING_DEVICE)
+embedding_model = AutoModel.from_pretrained(
+    MODEL_NAME,
+    torch_dtype=EMBEDDING_DTYPE,
+).to(EMBEDDING_DEVICE)
 embedding_model.eval()
 print(f"[INFO] embedding model device: {EMBEDDING_DEVICE}")
 

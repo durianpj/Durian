@@ -15,6 +15,7 @@ from app.services.question_service import (
     extract_employee_name,
     extract_name_like_prefix,
     is_employee_collection_query,
+    is_org_work_owner_query,
     is_self_question,
 )
 from app.services.question_analyzer_service import (
@@ -862,6 +863,9 @@ def filter_match(actual_value, op: str, expected_value) -> bool:
     if op == "contains":
         return expected_text in actual_text
 
+    if op == "prefix":
+        return actual_text.startswith(expected_text)
+
     if op in {"gt", "gte", "lt", "lte"}:
         actual_number = to_number(actual_value)
         expected_number = to_number(expected_value)
@@ -896,6 +900,26 @@ def filter_match(actual_value, op: str, expected_value) -> bool:
     
 
     return False
+
+
+def normalize_partial_employee_name_filter(value: str | None) -> str | None:
+    if not value:
+        return None
+
+    text = str(value).strip()
+    compact_value = compact_text(text)
+
+    if re.fullmatch(r"[가-힣]{1,2}씨", compact_value):
+        return compact_value[:-1]
+
+    if re.fullmatch(r"[가-힣]{1,2}성", compact_value):
+        return compact_value[:-1]
+
+    return None
+
+
+def is_partial_employee_name_condition(value: str | None) -> bool:
+    return normalize_partial_employee_name_filter(value) is not None
 
 
 def filter_hits_by_filters(hits: list[dict], filters: list[dict]) -> list[dict]:
@@ -1176,14 +1200,21 @@ def process_task(
         }
     # 질문이 "직원들/사람들/목록"처럼 여러 직원을 조회하는 질문인지 판단한다.
     requested_employee_collection = is_employee_collection_query(original_question)
+    org_work_owner_query = is_org_work_owner_query(original_question)
 
     # 특정 직원 1명조회로 오해 하지 않도록 지운다.
     if requested_employee_collection:
         task["employee_name"] = None
         task["employee_id"] = None
-
         if intent == "single_lookup":
             intent = "condition_search"
+
+    if org_work_owner_query:
+        task["employee_name"] = None
+        task["employee_id"] = None
+        task["is_self"] = False
+        intent = "condition_search"
+        task["target_fields"] = ["employee"]
 
     # print("[TIME] process_task start:", intent)
 
@@ -1196,6 +1227,19 @@ def process_task(
 
     # LLM이 만든 filters를 바로 쓰지 않고 허용 필드/연산자/조직 값 기준으로 정리한다.
     filters = sanitize_filters(task.get("filters", []))
+
+    partial_employee_name = normalize_partial_employee_name_filter(
+        task.get("employee_name")
+    )
+
+    if partial_employee_name:
+        filters = add_filter_if_missing(
+            filters=filters,
+            field="employee_name",
+            op="prefix",
+            value=partial_employee_name,
+        )
+        task["employee_name"] = None
 
     filters = remove_hallucinated_org_filters(
         filters=filters,
@@ -1230,7 +1274,10 @@ def process_task(
     # ex) "김민수 대리의 부서 알려줘" -> "김민수"를 대상으로 검색해야 하므로
     if (
         task.get("job_grade")
-        and not task.get("employee_name")
+        and (
+            not task.get("employee_name")
+            or is_partial_employee_name_condition(task.get("employee_name"))
+        )
         and value_appears_in_question(original_question, task.get("job_grade"))
     ):
         filters = add_filter_if_missing(
@@ -1244,7 +1291,10 @@ def process_task(
     # ex) "김민수 팀장의 부서 알려줘" -> "김민수"를 대상으로 검색해야 하므로
     if (
         task.get("position")
-        and not task.get("employee_name")
+        and (
+            not task.get("employee_name")
+            or is_partial_employee_name_condition(task.get("employee_name"))
+        )
         and value_appears_in_question(original_question, task.get("position"))
     ):
         filters = add_filter_if_missing(
@@ -1294,6 +1344,9 @@ def process_task(
     if intent == "unknown" and target_fields:
         intent = "single_lookup"
 
+    if requested_employee_collection and intent == "single_lookup":
+        intent = "condition_search"
+
     if intent == "unknown" or not target_fields:
         # 이 task는 조건에 맞지 않아 처리하지 않고 건너뛴다.
         # print(
@@ -1329,6 +1382,7 @@ def process_task(
 
     if (
         intent == "single_lookup"
+        and not org_work_owner_query
         and not requested_employee_collection
         and not bool(task.get("is_self", False))
     ):
@@ -1348,6 +1402,7 @@ def process_task(
 
     if (
         intent == "condition_search"
+        and not org_work_owner_query
         and not requested_employee_collection
         and not filters
         and not task.get("employee_name")
@@ -1386,7 +1441,12 @@ def process_task(
 
     actual_employee_name = find_employee_name_in_question(original_question)
 
-    if intent != "employee_count" and actual_employee_name and not task.get("employee_name"):
+    if (
+        intent != "employee_count"
+        and not org_work_owner_query
+        and actual_employee_name
+        and not task.get("employee_name")
+    ):
         task["employee_name"] = actual_employee_name
     elif (
         intent != "employee_count"
@@ -1411,7 +1471,12 @@ def process_task(
         intent = "condition_search"
 
     # 단일 직원 조회에서 LLM이 이름을 놓친 경우에만 정규식 기반 이름 추출로 보완한다.
-    if intent == "single_lookup" and not requested_employee_collection and not is_self:
+    if (
+        intent == "single_lookup"
+        and not org_work_owner_query
+        and not requested_employee_collection
+        and not is_self
+    ):
         if (
             not task.get("employee_name")
             and not task.get("employee_id")
@@ -1432,6 +1497,7 @@ def process_task(
         intent == "single_lookup"
         and code_extracted_name
         and not actual_employee_name
+        and not org_work_owner_query
         and not requested_employee_collection
         and not is_self
         and not has_explicit_target
@@ -1567,16 +1633,14 @@ def process_task(
     # search_permission_level = 검색할 때 적용할 권한 레벨
 
     unknown_orgs = task.get("unknown_orgs") or []
-    has_valid_org_target = any(
+    has_valid_department_or_team_target = any(
         task.get(key)
-        for key in ["department", "team", "job_grade", "position"]
+        for key in ["department", "team"]
     )
 
     if (
         unknown_orgs
-        and intent in {"condition_search", "employee_list"}
-        and not has_valid_org_target
-        and not filters
+        and not has_valid_department_or_team_target
     ):
         return {
             "answer": build_unknown_org_answer(unknown_orgs),
@@ -1737,8 +1801,48 @@ def process_task(
 
     search_hits = []
 
-    # 조직/직급/직책만 묻는 단순 직원 목록은 직접 조건 검색.
+    # "전체 직원 주소/연봉"처럼 조건 없이 직원 집합의 특정 필드를 묻는 질문은
+    # hybrid 상위 50개가 아니라 접근 가능한 전체 후보에서 값을 모은다.
     if (
+        requested_employee_collection
+        and not is_self
+        and intent in {"condition_search", "employee_list"}
+        and not filters
+        and not sort
+        and not (task.get("department") or task.get("team") or task.get("job_grade") or task.get("position"))
+    ):
+        search_hits = search_employees_by_filter_conditions(
+            indices=indices,
+            filters=[],
+            size=10000,
+        )
+
+        search_hits = filter_hits_with_answer_values(
+            hits=search_hits,
+            answer_fields=answer_fields,
+        )
+        search_hits, hidden_retired_ids = apply_retired_employee_visibility(
+            hits=search_hits,
+            permission_level=permission_level,
+        )
+
+        if not search_hits:
+            if hidden_retired_ids:
+                return build_retired_employee_restricted_result(
+                    permission_level=permission_level,
+                    answer_fields=answer_fields,
+                    is_self=is_self,
+                )
+            answer = NO_SEARCH_RESULT_MESSAGE
+        else:
+            answer = format_allowed_hits_answer(
+                hits=search_hits,
+                allowed_fields=allowed_fields,
+                limit=result_limit or MAX_OUTPUT_EMPLOYEES,
+            )
+
+    # 조직/직급/직책만 묻는 단순 직원 목록은 직접 조건 검색.
+    elif (
         not is_self
         and intent in {"employee_list", "condition_search"}
         and (task.get("department") or task.get("team") or task.get("job_grade") or task.get("position"))
@@ -1756,6 +1860,10 @@ def process_task(
             job_grade=task.get("job_grade"),
             position=task.get("position"),
             size=10000,
+        )
+        search_hits = filter_hits_by_filters(
+            hits=search_hits,
+            filters=search_filters,
         )
         search_hits, hidden_retired_ids = apply_retired_employee_visibility(
             hits=search_hits,

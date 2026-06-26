@@ -138,6 +138,13 @@ def _get_field_terms() -> list[str]:
         "징계이력",
         "급여",
         "연봉",
+        "이전직장",
+        "전직장",
+        "이전회사",
+        "전회사",
+        "이전최종직급",
+        "이전담당업무",
+        "담당업무",
     ]
 
     terms.extend(aliases)
@@ -316,6 +323,26 @@ def _value_appears_outside_container_terms(
     return False
 
 
+def _is_employee_noun_usage(question: str, value: str | None) -> bool:
+    if value != "사원":
+        return False
+
+    compact_question = compact_text(question)
+
+    if not compact_question.endswith("사원"):
+        return False
+
+    prefix = compact_question[:-len("사원")]
+
+    if not prefix:
+        return False
+
+    if prefix.endswith(("부", "팀")):
+        return True
+
+    return any(org and org in prefix for org in DEPARTMENTS + TEAMS)
+
+
 def _find_unknown_org_candidates(question: str, known_org_terms: set[str]) -> list[str]:
     """
     기준 데이터에는 없지만 조직명처럼 보이는 후보를 찾는다.
@@ -345,6 +372,12 @@ def _find_unknown_org_candidates(question: str, known_org_terms: set[str]) -> li
     # 예: 마케팅부, DX전략실, 데이터팀
     for match in re.finditer(r"[가-힣A-Za-z0-9]+(?:본부|부서|부|팀|실)", compact_question):
         value = match.group()
+        start, end = match.span()
+
+        if value.endswith("부") and re.search(r"\d+(?:살|세)?부$", value):
+            after = compact_question[end:end + 2]
+            if after.startswith("터"):
+                continue
 
         # 이미 알고 있는 부서/팀/직급/직책이면 unknown 후보에서 제외
         if value in known_org_terms:
@@ -420,6 +453,7 @@ def extract_question_candidates(question: str) -> dict:
             value=job_grade,
             container_terms=field_terms,
         )
+        and not _is_employee_noun_usage(question, job_grade)
     ]
 
     # 질문 안에서 직책 후보 찾기

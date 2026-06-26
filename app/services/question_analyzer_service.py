@@ -10,6 +10,7 @@ from app.services.question_service import (
     extract_employee_id,
     extract_employee_name,
     is_employee_collection_query,
+    is_org_work_owner_query,
     is_self_question,
 )
 from common.hr_fields import (
@@ -460,6 +461,26 @@ def find_org_alias(question: str) -> tuple[str, str] | None:
     return None
 
 
+def is_employee_noun_usage(question: str, value: str | None) -> bool:
+    if value != "사원":
+        return False
+
+    compact_question = compact_text(question)
+
+    if not compact_question.endswith("사원"):
+        return False
+
+    prefix = compact_question[:-len("사원")]
+
+    if not prefix:
+        return False
+
+    if prefix.endswith(("부", "팀")):
+        return True
+
+    return bool(find_known_value(prefix, DEPARTMENTS + TEAMS))
+
+
 def is_org_alias_text(text: str | None) -> bool:
     """
     employee_name 자리에 들어오면 안 되는 조직/별칭 표현인지 확인한다.
@@ -649,6 +670,13 @@ def normalize_semantic_filters(filters: list[dict], question: str) -> list[dict]
 
         field = item.get("field")
 
+        if (
+            field == "performance_score"
+            and str(item.get("value", "")).strip() in {"평균", "우수", "좋음"}
+            and ("평가" in compact_question or "고과" in compact_question)
+        ):
+            continue
+
         if field in evaluation_fields:
             has_evaluation_filter = True
             normalized_filters.append(
@@ -778,6 +806,51 @@ def normalize_numeric_threshold_filters(filters: list[dict], question: str) -> l
 
     compact_question = compact_text(question)
 
+    age_decade_match = re.search(r"(\d{2})대", compact_question)
+
+    if age_decade_match and any(keyword in compact_question for keyword in ["직원", "사원", "사람", "나이", "연령"]):
+        start_age = int(age_decade_match.group(1))
+        end_age = start_age + 9
+        filters = [
+            item
+            for item in filters
+            if not (isinstance(item, dict) and item.get("field") == "age")
+        ]
+        filters.append(
+            {
+                "field": "age",
+                "op": "between",
+                "value": [start_age, end_age],
+            }
+        )
+        return filters
+
+    age_between_match = re.search(
+        r"(\d{1,3})(?:살|세)?(?:부터|에서|~|-)(\d{1,3})(?:살|세)?(?:까지|사이|사이의)?",
+        compact_question,
+    )
+
+    if age_between_match and any(keyword in compact_question for keyword in ["직원", "사원", "사람", "나이", "연령", "살", "세"]):
+        start_age = int(age_between_match.group(1))
+        end_age = int(age_between_match.group(2))
+
+        if start_age > end_age:
+            start_age, end_age = end_age, start_age
+
+        filters = [
+            item
+            for item in filters
+            if not (isinstance(item, dict) and item.get("field") == "age")
+        ]
+        filters.append(
+            {
+                "field": "age",
+                "op": "between",
+                "value": [start_age, end_age],
+            }
+        )
+        return filters
+
     numeric_targets = [
         {
             "field": "tenure",
@@ -892,6 +965,13 @@ def infer_sort_from_question(question: str) -> dict | None:
     if not sort_field:
         return None
 
+    if (
+        sort_field.startswith("evaluation")
+        and any(word in compact_question for word in EVALUATION_GRADE_WORDS)
+        and not any(keyword in compact_question for keyword in ["가장", "제일", "최고", "상위"])
+    ):
+        return None
+
     ascending_keywords = ["최저", "낮은", "적은", "짧은"]
     order = "asc" if any(keyword in compact_question for keyword in ascending_keywords) else "desc"
 
@@ -943,6 +1023,9 @@ def normalize_target_fields_by_question(
         (["주민등록번호", "주민번호"], "rrn"),
         (["사원번호", "사번"], "employee_id"),
         (["이름", "성명"], "employee"),
+        (["이전직장의직급", "이전직장직급", "이전최종직급"], "previous_job_grade"),
+        (["이전직장명", "이전직장", "전직장", "이전회사", "전회사"], "previous_company"),
+        (["이전담당업무", "담당업무", "이전업무", "전직장업무"], "previous_task"),
         (["이메일", "메일"], "email"),
         (["전화번호", "연락처", "휴대폰", "핸드폰"], "phone"),
         (["주소"], "address"),
@@ -985,7 +1068,7 @@ def normalize_target_fields_by_question(
     )
 
     if detected_fields:
-        normalized_fields = unique_keep_order(normalized_fields + detected_fields)
+        normalized_fields = unique_keep_order(detected_fields + normalized_fields)
     else:
         normalized_fields = [
             "employee" if field == "employee_name" else field
@@ -993,6 +1076,26 @@ def normalize_target_fields_by_question(
         ]
 
     normalized_fields = unique_keep_order(normalized_fields)
+
+    previous_career_context = any(
+        keyword in compact_question
+        for keyword in ["이전직장", "전직장", "이전회사", "전회사", "이전최종직급"]
+    )
+
+    if previous_career_context:
+        if "previous_company" in normalized_fields and "employee" in normalized_fields:
+            normalized_fields = [
+                field
+                for field in normalized_fields
+                if field != "employee"
+            ]
+
+        if "previous_job_grade" in normalized_fields and "job_grade" in normalized_fields:
+            normalized_fields = [
+                field
+                for field in normalized_fields
+                if field != "job_grade"
+            ]
 
     # 사용자가 입력한 주민등록번호(rrn)를 물어본 것을 LLM이 employee_id로 잘못 분석하는 경우 rrnㅇ로 보정한다.
     if "주민등록번호" in compact_question or "주민번호" in compact_question:
@@ -1569,6 +1672,8 @@ def normalize_tasks(
         JOB_GRADES,
         ignored_container_terms=get_field_label_terms(),
     )
+    if is_employee_noun_usage(question, found_job_grade):
+        found_job_grade = None
 
     # 질문 문장에 실제 직책명이 있는지 찾는다.
     found_position = find_known_value(question, POSITIONS)
@@ -1576,7 +1681,12 @@ def normalize_tasks(
     # 사용자가 정확한 부서명/팀명이 아니라 별칭처럼 물어볼 수 있다.
     # 이런 표현을 실제 department 또는 team 값으로 바꿔줄 수 있는지 찾는다.
     unknown_org_candidates = (candidates or {}).get("unknown_orgs") or []
-    found_org_alias = None if unknown_org_candidates else find_org_alias(question)
+    org_work_owner_query = is_org_work_owner_query(question)
+    found_org_alias = (
+        find_org_alias(question)
+        if org_work_owner_query
+        else None if unknown_org_candidates else find_org_alias(question)
+    )
 
     # 별칭이 발견되었고,
     # 아직 정확한 부서/팀을 못 찾은 경우에만 별칭 결과를 사용한다.
@@ -1629,6 +1739,12 @@ def normalize_tasks(
         "인원수",
         "인원",
         "명수",
+        "직원수",
+        "사원수",
+        "전체직원수",
+        "전체사원수",
+        "총직원수",
+        "총사원수",
         "총몇명",
         "몇명이야",
         "몇명인지",
@@ -1638,6 +1754,9 @@ def normalize_tasks(
     requested_employee_count = any(
         keyword in compact_question
         for keyword in count_keywords
+    ) or any(
+        isinstance(task, dict) and task.get("intent") == "employee_count"
+        for task in tasks
     )
     requested_employee_collection = is_employee_collection_query(question)
     question_is_self = is_self_question(question)
@@ -1745,6 +1864,8 @@ def normalize_tasks(
         raw_department = task.get("department")
         raw_team = task.get("team")
         raw_job_grade = task.get("job_grade")
+        if is_employee_noun_usage(question, raw_job_grade):
+            raw_job_grade = None
         raw_position = task.get("position")
 
         # LLM이 준 department가 실제 DEPARTMENTS 목록에 있으면 사용한다.
@@ -1952,6 +2073,14 @@ def normalize_tasks(
         # 이름이 없으면 None
         employee_name, employee_id = normalize_employee_identity_fields(task)
 
+        if org_work_owner_query:
+            employee_name = None
+            employee_id = None
+            task_is_self = False
+            intent = "condition_search"
+            safe_fields = ["employee"]
+            unknown_org_candidates = []
+
         if is_limit_placeholder_name(employee_name):
             employee_name = None
 
@@ -2000,7 +2129,8 @@ def normalize_tasks(
         # intent가 single_lookup이 아니어도,
         # 질문에 사람 이름이 있으면 코드에서 다시 이름을 보정한다.
         if (
-            not requested_employee_collection
+            not org_work_owner_query
+            and not requested_employee_collection
             and not task_is_self
             and not employee_name
             and not employee_id
