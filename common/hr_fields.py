@@ -385,6 +385,19 @@ FIELD_RULES = {
         "required_level": 3,
         "embedding_label": "자격증수당여부",
     },
+
+    # =========================
+    # 변경이력 (OpenSearch changed 필드)
+    # 모든 인덱스에 분산 저장되므로 doc_type/index_level은 지정하지 않는다.
+    # select_indices_by_fields에서 accessible_indices 전체를 반환하게 한다.
+    # required_level=3으로 두면 본인 조회 시 search_permission_level이 3으로 올라가서
+    # 모든 인덱스(주소·연봉 포함)의 변경이력을 볼 수 있다.
+    # 타인 조회는 관리자(레벨 3)만 가능.
+    # =========================
+    "change_history": {
+        "label": "변경이력",
+        "required_level": 3,
+    },
 }
 
 

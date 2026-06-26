@@ -185,12 +185,13 @@ def is_field_only_followup_question(question: str) -> bool:
 def has_explicit_target(question: str) -> bool:
     """
     질문 안에 조회 대상이 명시되어 있는지 확인한다.
+    이름 후보는 실제 직원 명부에 존재하는 경우에만 명시 대상으로 인정한다.
     """
 
     if not question:
         return False
 
-    
+
     compact_question = compact_text(question)
 
     if extract_employee_id(question):
@@ -198,7 +199,13 @@ def has_explicit_target(question: str) -> bool:
 
     employee_name = extract_employee_name(question)
 
-    if employee_name and (employee_name not in NOT_TARGET_NAMES):
+    # extract_employee_name은 "밖에없어" 같은 한글 토막도 잘못 잡을 수 있으므로,
+    # 실제 직원 명부에 있는 이름인 경우에만 명시 대상으로 본다.
+    if (
+        employee_name
+        and employee_name not in NOT_TARGET_NAMES
+        and employee_name_exists(employee_name)
+    ):
         return True
 
     #compact_question = 공백 제거된 질문 / DEPARTMENTS, TEAMS, JOB_GRADES, POSITIONS에 있는 값이 compact_question에 하나라도 있으면 True, 없으면 False
@@ -211,40 +218,12 @@ def has_explicit_target(question: str) -> bool:
 
 def is_followup_question(question: str) -> bool:
     """
-    이전 대상을 이어서 묻는 후속 질문인지 확인한다.
-
-    예:
-    - 그 사람 이메일도 알려줘
-    - 이메일도 알려줘
-    - 그 팀 계약직도 알려줘
+    이전 대화의 후속 질문인지 LLM이 판단하지 못한 극단적 경우만 잡는 보조 함수다.
+    실제 후속질문 판단은 should_apply_memory_with_llm(LLM 기반)에서 한다.
     """
-
-    if not question:
-        return False
-
-    compact_question = compact_text(question)
-
-    followup_keywords = [
-        "그사람",
-        "그분",
-        "그직원",
-        "해당직원",
-        "방금사람",
-        "방금직원",
-        "아까사람",
-        "아까직원",
-        "그팀",
-        "해당팀",
-        "그부서",
-        "해당부서",
-        "거기",
-    ]
-
-    if any(keyword in compact_question for keyword in followup_keywords):
-        return True
-    
-    # 명시된 대상이 없고, 질문에 "도"가 포함되어 있으면 후속 질문으로 판단한다.
-    return ("도" in compact_question) and (not has_explicit_target(question))
+    # 의도적으로 항상 False를 반환한다.
+    # 후속질문 판단은 should_apply_memory_with_llm에 일원화한다.
+    return False
 
 
 def has_memory_applicable_keyword(question: str) -> bool:
@@ -363,6 +342,7 @@ def remove_followup_reference(question: str) -> str:
     cleaned = question
 
     reference_words = [
+        # 사람/조직 지시 대명사만 제거. 이들은 메모리의 target이 대체한다.
         "그 사람",
         "그사람",
         "그분",
@@ -387,6 +367,8 @@ def remove_followup_reference(question: str) -> str:
         "해당 부서",
         "해당부서",
         "거기",
+        # 사물 지시 대명사("그거","이거" 등)는 일부러 보존한다.
+        # 분석기가 "EMP0003 변경이력 그거밖에없어?" 형태로 의미를 이어가도록 한다.
     ]
 
     for word in reference_words:
@@ -395,152 +377,130 @@ def remove_followup_reference(question: str) -> str:
     return " ".join(cleaned.split())
 
 
-def should_apply_memory_with_llm(question: str, requester_employee_id: str) -> str:
+def compose_followup_question_with_llm(
+    question: str,
+    requester_employee_id: str,
+) -> str | None:
     """
-    현재 질문이 이전 대화를 이어받아야 하는지 LLM으로 먼저 판단한다.
+    이전 대화 기억을 이용해 현재 질문이 후속 질문이면 자연스럽게 보강된 질문을 LLM이 생성한다.
 
     반환값:
-    - "employee": 이전 직원 대상을 이어받음
-    - "org": 이전 조직 대상을 이어받음
-    - "none": 메모리 미적용
+    - 보강된 질문 문자열: 메모리를 적용해 완성된 질문
+    - None: 메모리를 적용할 필요가 없거나 LLM이 거부했을 때 (원본 질문 사용)
     """
 
     memory = conversation_memory.get(requester_employee_id, {})
+    print(f"[DEBUG] memory state for {requester_employee_id}: {memory}")
     if not memory:
-        return "none"
+        print("[DEBUG] memory empty -> compose=NONE")
+        return None
+
+    last_question = memory.get("last_question") or "(없음)"
+    employee_target = (
+        memory.get("last_employee_id")
+        or memory.get("last_employee_name")
+        or ""
+    )
+    org_target = (
+        memory.get("last_team")
+        or memory.get("last_department")
+        or memory.get("last_position")
+        or ""
+    )
+    topic_labels = ", ".join(memory.get("last_topic_labels") or []) or "(없음)"
+
+    target_lines = []
+    if employee_target:
+        target_lines.append(f"이전 직원 대상: {employee_target}")
+    if org_target:
+        target_lines.append(f"이전 조직 대상: {org_target}")
+    if not target_lines:
+        target_lines.append("이전 대상: (없음)")
+    target_text = "\n    ".join(target_lines)
 
     prompt = f"""
-    다음 HR 질문이 이전 대화 기억을 이어받아야 하는지 판단해라.
-    반드시 employee, org, none 중 하나만 출력해라.
-    추가 설명은 쓰지 마라.
+    HR 챗봇 후속질문 처리기다.
+    현재 질문이 이전 대화의 후속 질문이면, 이전 대상·토픽을 보강해서 분석기가 이해할 수 있는 완전한 한국어 질문 한 줄을 출력해라.
+    후속 질문이 아니면 정확히 NONE 한 단어만 출력해라.
+    설명, 인용, 마크다운, 따옴표는 금지한다.
 
+    이전 질문: {last_question}
+    {target_text}
+    이전 토픽 라벨: {topic_labels}
     현재 질문: {question}
-    이전 기억 요약: {json.dumps({
-        "has_employee": bool(memory.get("last_employee_name") or memory.get("last_employee_id")),
-        "has_org": bool(memory.get("last_team") or memory.get("last_department") or memory.get("last_position")),
-    }, ensure_ascii=False)}
 
     판단 기준:
-    - employee: 이전 직원 대상이 있고, 현재 질문이 그 직원을 이어서 묻는 질문이다.
-    - org: 이전 부서/팀/직책 대상이 있고, 현재 질문이 그 조직을 이어서 묻는 질문이다.
-    - none: 새 질문이거나 대상이 불분명하다.
+    - 현재 질문에 사람·조직 대상이 이미 명시되어 있으면 NONE.
+    - 현재 질문이 그 자체로 완전한 독립 질문이면 NONE.
+    - 현재 질문이 이전 답변/대상을 한정·되묻기·확인·구체화하는 표현이면 후속이다.
 
-    중요 규칙:
-    - 질문이 그 자체로 독립적인 조건/목록 검색이면 반드시 none이다.
-    - "평가 정보가 있는 직원 찾아줘", "계약직 직원 찾아줘", "입사일 있는 직원 찾아줘"는 이전 조직을 이어받지 않는 새 질문이다.
-    - "그중 평가 정보가 있는 직원 찾아줘", "해당 부서에서 평가 있는 직원 찾아줘", "거기 계약직도 알려줘"처럼 이전 대상을 가리키는 표현이 있을 때만 org다.
-    - 단순히 HR 필드명이나 "직원"이라는 단어가 있다는 이유만으로 org 또는 employee를 선택하지 마라.
+    보강 규칙(후속일 때):
+    - 이전 직원/조직 대상을 사용해 누구에 대한 질문인지 명시한다.
+    - 이전 토픽 라벨이 있고 현재 질문이 그 토픽을 가리키면 한국어 자연 어순으로 토픽을 포함시킨다.
+    - 현재 질문의 어휘(예: "그거", "밖에", "더")는 보존해서 사용자 의도를 그대로 살린다.
+    - 답변이나 새로운 정보를 만들지 마라. 질문만 다시 쓴다.
 
-    예시:
-    - 현재 질문: 평가 정보가 있는 직원 찾아줘 -> none
-    - 현재 질문: 그중 평가 정보가 있는 직원 찾아줘 -> org
-    - 현재 질문: 계약직 직원 찾아줘 -> none
-    - 현재 질문: 거기 계약직도 알려줘 -> org
-    - 현재 질문: 이메일 알려줘 -> employee
+    출력 예시:
+    - 이전 질문: 내 변경이력 알려줘 / 현재 질문: 그거밖에없어? → EMP0003의 변경이력이 그거밖에 없어?
+    - 이전 질문: 김민수 부서 알려줘 / 현재 질문: 이메일도 알려줘 → 김민수 이메일도 알려줘
+    - 이전 질문: 채용팀 직원 알려줘 / 현재 질문: 계약직도 알려줘 → 채용팀 계약직 직원 알려줘
+    - 이전 질문: 아무거나 / 현재 질문: 2024년 입사자 알려줘 → NONE
     """.strip()
 
     try:
         result = call_llm_completion(
             prompt=prompt,
             temperature=0.0,
-            max_tokens=4,
+            max_tokens=80,
             timeout=10,
-        ).strip().lower()
-    except Exception:
-        return "none"
+        ).strip()
+    except Exception as e:
+        print("[DEBUG] followup compose LLM error:", e)
+        return None
 
-    if result.startswith("employee"):
-        return "employee"
-    if result.startswith("org"):
-        return "org"
+    print(f"[DEBUG] followup compose raw='{result}' last_q='{last_question}' current='{question}'")
 
-    return "none"
+    # 빈 응답·NONE·따옴표 등 정제
+    cleaned_result = result.strip().strip('"').strip("'")
+    if not cleaned_result or cleaned_result.upper() == "NONE":
+        return None
+
+    # 한 줄만 채택해서 부가 텍스트가 묻어와도 안전하게 처리
+    first_line = cleaned_result.splitlines()[0].strip()
+    if not first_line or first_line.upper() == "NONE":
+        return None
+
+    return first_line
 
 
 def resolve_question_with_memory(question: str, requester_employee_id: str) -> str:
     """
     이전 조회 대상을 사용해 후속 질문을 보정한다.
+    후속 판단과 자연어 보강은 LLM이 한 번에 처리한다.
 
     보안상 검색 결과나 민감정보는 사용하지 않고, 대상 식별자만 사용한다.
     """
 
-    # 질문이 비어 있으면 보정할 수 없으므로 그대로 반환한다.
     if not question:
         return question
 
-    # "내 연봉", "내 부서"처럼 본인 조회는 이전 대화 대상과 섞이면 안 되므로 그대로 둔다.
+    # 본인 명시 질문은 그대로 둔다. LLM 호출도 생략한다.
     if is_self_question(question):
         return question
 
-    # 질문 안에 사람/조직 대상이 이미 명시되어 있으면 세션 메모리를 붙이지 않는다.
-    # 예: "엄성민 급여는?"에 이전 대상 EMP0070을 덧붙이면 오답이 된다.
-    # 질문에 이미 대상이 있으면 메모리를 붙이지 않는다.
+    # 이미 명시 대상이 있으면 메모리를 섞지 않는다.
     if has_explicit_target(question):
         return question
 
     memory = conversation_memory.get(requester_employee_id, {})
-    employee_target = (
-        memory.get("last_employee_id")
-        or memory.get("last_employee_name")
-    )
-
-    # 필드명만 있는 짧은 후속 질문은 LLM 판단보다 이전 직원 대상을 우선한다.
-    # 명시적인 본인 표현은 위에서 이미 제외했으므로 requester로 바뀌지 않는다.
-    if employee_target and is_field_only_followup_question(question):
-        return f"{employee_target} {remove_followup_reference(question)}"
-
-    memory_scope = should_apply_memory_with_llm(question, requester_employee_id)
-
-    if memory_scope == "none" and not is_followup_question(question):
+    if not memory:
         return question
 
+    # 후속 판단 + 자연어 보강을 LLM에게 일임한다.
+    composed = compose_followup_question_with_llm(question, requester_employee_id)
+    if composed:
+        return composed
 
-
-    # conversation_memory에서 requester_employee_id로 기억된 대상을 가져온다.
-    memory = conversation_memory.get(requester_employee_id, {})
-    # cleaned_question = question에서 후속 질문 표현 제거 ex) "그 사람 이메일도 알려줘" -> "이메일도 알려줘"
-    cleaned_question = remove_followup_reference(question)
-
-    # 이전에 특정 직원을 조회했다면 그 직원을 이번 질문의 대상으로 붙인다.
-    # 예: 이전 "김민수 부서 알려줘" 이후 "이메일도 알려줘" -> "김민수 이메일도 알려줘"
-    # 사번이 있으면 이름보다 사번을 우선한다. 동명이인 문제를 줄이기 위한 기준이다.
-    employee_target = (
-        memory.get("last_employee_id")
-        or memory.get("last_employee_name")
-    )
-
-    # 이전에 특정 조직을 조회했다면 그 조직을 이번 질문의 대상으로 붙인다.
-    # 예: 이전 "채용팀 직원 알려줘" 이후 "계약직도 알려줘" -> "채용팀 계약직도 알려줘"
-    org_target = (
-        memory.get("last_team")
-        or memory.get("last_department")
-        or memory.get("last_position")
-    )
-
-    # 조건/목록 검색 질문에는 직원 1명 기억을 붙이지 않는다.
-    # 조직 기억이 있을 때만 조직 범위의 후속 조건 검색으로 해석한다.
-    if is_condition_or_collection_question(question):
-        if org_target and (
-            memory_scope == "org"
-            or is_followup_question(question)
-        ):
-            return f"{org_target} {cleaned_question}"
-
-        return question
-
-    if memory_scope == "employee" and employee_target:
-        return f"{employee_target} {cleaned_question}"
-
-    if memory_scope == "org" and org_target:
-        return f"{org_target} {cleaned_question}"
-
-    if employee_target:
-        return f"{employee_target} {cleaned_question}"
-
-    if org_target:
-        return f"{org_target} {cleaned_question}"
-
-    # 사용할 memory가 없으면 질문을 그대로 반환한다.
     return question
 
 
@@ -548,6 +508,7 @@ def resolve_question_with_memory(question: str, requester_employee_id: str) -> s
 def update_memory_from_tasks(
     requester_employee_id: str,
     tasks: list[dict],
+    last_question: str | None = None,
 ) -> None:
     """
     분석된 task에서 다음 질문 해석에 필요한 대상 정보만 저장한다.
@@ -556,12 +517,36 @@ def update_memory_from_tasks(
     - 특정 직원 조회는 직원만 기억한다.
     - 직원 조회에서 나온 department/team/position은 세션 조직 기억으로 저장하지 않는다.
     - 조직 목록/조직 직원 조회일 때만 department/team/position을 기억한다.
+    - last_question / last_topic_labels는 다음 후속질문 보강에 사용된다.
     """
 
     if not requester_employee_id or not isinstance(tasks, list):
         return
 
     memory = conversation_memory.setdefault(requester_employee_id, {})
+
+    # 다음 후속질문 판단에 쓸 수 있도록 직전 질문 원문을 저장한다.
+    if last_question:
+        memory["last_question"] = last_question
+
+    # 직전 토픽(target_fields의 한글 라벨)을 저장한다.
+    # 후속질문에서 토픽이 사라지더라도 라벨을 다시 붙여 분석기가 흐름을 이어가게 한다.
+    from common.hr_fields import FIELD_RULES
+
+    topic_labels: list[str] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        for field in task.get("target_fields", []) or []:
+            rule = FIELD_RULES.get(field)
+            if not rule:
+                continue
+            label = rule.get("label")
+            if label and label not in topic_labels:
+                topic_labels.append(label)
+
+    if topic_labels:
+        memory["last_topic_labels"] = topic_labels
 
     for task in tasks:
         if not isinstance(task, dict):

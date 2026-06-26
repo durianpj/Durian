@@ -266,6 +266,7 @@ def build_fallback_analysis(question: str) -> dict:
         (["평가", "고과", "인사고과"], get_evaluation_field_from_question(compact_question)),
         (["토익점수", "토익", "TOEIC점수", "TOEIC"], "toeic"),
         (["징계이력", "징계"], "disciplinary_history"),
+        (["변경이력", "변경내역", "변경사항", "수정이력"], "change_history"),
     ]
 
     for keywords, field in keyword_to_field:
@@ -878,6 +879,7 @@ def normalize_target_fields_by_question(
         (["평가", "고과", "인사고과"], evaluation_field),
         (["토익점수", "토익", "TOEIC점수", "TOEIC"], "toeic"),
         (["징계이력", "징계"], "disciplinary_history"),
+        (["변경이력", "변경내역", "변경사항", "수정이력"], "change_history"),
     ]
 
     field_positions = []
@@ -1273,6 +1275,7 @@ def analyze_question_to_tasks(question: str, candidates: dict | None = None) -> 
         - 토익점수, 토익, TOEIC점수, TOEIC -> toeic
         - 징계이력, 징계 -> disciplinary_history
         - 주민등록번호, 주민번호 -> rrn
+        - 변경이력, 변경내역, 변경사항, 수정이력 -> change_history
 
         target_fields 최종 점검:
         - 최종 반환 전에 사용자 질문 원문을 다시 읽고, 답변으로 보고 싶어 하는 필드가 target_fields에서 빠졌는지 반드시 점검한다.

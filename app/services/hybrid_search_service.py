@@ -565,6 +565,37 @@ def build_context(search_hits, question="", allowed_fields=None):
                 label = rule.get("label", field_key)
                 lines.append(f"{label}: {value}")
 
+        changed = source.get("changed")
+        if changed and isinstance(changed, list):
+            # change_history가 target_fields에 있으면 이력 전체를 보여준다.
+            # (인덱스 레벨로 이미 권한 통제가 됨)
+            # 그 외에는 allowed_fields 기준 라벨만 허용해 권한 밖 필드 이력을 숨긴다.
+            show_all_history = "change_history" in (allowed_fields or [])
+            allowed_labels = set()
+            if not show_all_history:
+                for fk in allowed_fields:
+                    rule = FIELD_RULES.get(fk)
+                    if rule:
+                        if rule.get("label"):
+                            allowed_labels.add(rule["label"])
+                        if rule.get("embedding_label"):
+                            allowed_labels.add(rule["embedding_label"])
+
+            history_lines = ["변경이력:"]
+            for entry in changed:
+                timestamp = entry.get("timestamp", "")
+                for f in entry.get("fields", []):
+                    field_label = f.get("field", "")
+                    if not show_all_history and allowed_labels and field_label not in allowed_labels:
+                        continue
+                    old_val = f.get("old", "") or "없음"
+                    new_val = f.get("new", "") or "없음"
+                    history_lines.append(
+                        f"  {timestamp} | {field_label} | {old_val} → {new_val}"
+                    )
+            if len(history_lines) > 1:
+                lines.extend(history_lines)
+
         context_list.append("\n".join(lines))
 
     return "\n\n".join(context_list)
@@ -2013,6 +2044,13 @@ def make_sources(hits, allowed_fields=None) -> list[dict]:
             if field_key == "employee":
                 continue
 
+            # change_history는 OpenSearch의 changed 배열을 그대로 노출한다.
+            if field_key == "change_history":
+                changed = source.get("changed")
+                if changed:
+                    source_item["change_history"] = changed
+                continue
+
             rule = FIELD_RULES.get(field_key)
 
             if not rule:
@@ -2060,6 +2098,13 @@ def filter_hits_with_answer_values(hits, answer_fields: list[str]) -> list[dict]
         has_value = False
 
         for field_key in fields_to_check:
+            # change_history는 일반 필드가 아니라 OpenSearch의 changed 배열을 본다.
+            if field_key == "change_history":
+                if source.get("changed"):
+                    has_value = True
+                    break
+                continue
+
             value = get_allowed_field_value(
                 source=source,
                 embedding_text=embedding_text,

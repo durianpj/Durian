@@ -465,6 +465,7 @@ def handle_rag_chat(question: str, employee_id: str) -> dict:
     update_memory_from_tasks(
         requester_employee_id=employee_id,
         tasks=tasks,
+        last_question=question,
     )
 
     # 전체 task 처리 소요 시간 출력

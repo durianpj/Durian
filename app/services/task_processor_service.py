@@ -1365,6 +1365,15 @@ def process_task(
     ):
         task["is_self"] = True
 
+    # 후속 질문이 메모리로 보강되면서 본인 사번이 employee_id로 들어온 경우,
+    # 명시적 "내" 표현이 없어도 본인 조회로 인식해 권한·인덱스 라우팅을 맞춰준다.
+    if (
+        requester_employee_id
+        and task.get("employee_id")
+        and str(task["employee_id"]).strip().upper() == requester_employee_id.strip().upper()
+    ):
+        task["is_self"] = True
+
     is_self = bool(task.get("is_self", False))
     filters = remove_self_placeholder_filters(filters, is_self)
     task["filters"] = filters
