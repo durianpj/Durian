@@ -213,18 +213,109 @@ def parse_key_value_analysis(raw_text: str) -> dict:
     }
 
 
+def _parse_salary_condition(question: str) -> dict | None:
+    """
+    "연봉 4천 넘는", "연봉 5천만원 이상" 같은 연봉 범위 조건을 파싱한다.
+
+    반환: {"field": "salary", "op": "gt"/"gte"/"lt"/"lte", "value": 숫자} 또는 None
+    """
+
+    compact_q = compact_text(question)
+
+    if "연봉" not in compact_q:
+        return None
+
+    amount = None
+
+    # 억 단위: "1억", "1.5억"
+    m = re.search(r"(\d+(?:\.\d+)?)\s*억", compact_q)
+    if m:
+        amount = int(float(m.group(1)) * 100_000_000)
+
+    # X천만: "4천만", "4천만원"
+    if not amount:
+        m = re.search(r"(\d+)\s*천\s*만", compact_q)
+        if m:
+            amount = int(m.group(1)) * 10_000_000
+
+    # X천: "4천" (연봉 맥락에서 만원 단위)
+    if not amount:
+        m = re.search(r"(\d+)\s*천", compact_q)
+        if m:
+            amount = int(m.group(1)) * 10_000_000
+
+    # X만: "4000만", "4500만원"
+    if not amount:
+        m = re.search(r"(\d+)\s*만", compact_q)
+        if m:
+            amount = int(m.group(1)) * 10_000
+
+    # 순수 숫자: "45000000"
+    if not amount:
+        m = re.search(r"연봉\s*(\d{7,})", compact_q)
+        if m:
+            amount = int(m.group(1))
+
+    if not amount:
+        return None
+
+    if re.search(r"이상", compact_q):
+        op = "gte"
+    elif re.search(r"이하", compact_q):
+        op = "lte"
+    elif re.search(r"미만", compact_q):
+        op = "lt"
+    elif re.search(r"넘|초과", compact_q):
+        op = "gt"
+    else:
+        op = "gte"
+
+    return {"field": "salary", "op": op, "value": amount}
+
+
+def _extract_job_duty_keyword(question: str) -> str | None:
+    """
+    "X 하는사람", "X 담당하는사람", "X 관련 업무" 패턴에서 담당업무 키워드를 추출한다.
+    X가 알려진 부서/팀이 아닌 경우에만 반환한다.
+    """
+
+    known_org_terms = set(DEPARTMENTS + TEAMS + JOB_GRADES + POSITIONS)
+
+    patterns = [
+        r"([가-힣A-Za-z0-9]+(?:\s[가-힣A-Za-z0-9]+)?)\s+(?:하는|담당하는|맡은)\s*(?:사람|직원|사원)",
+        r"([가-힣A-Za-z0-9]+(?:\s[가-힣A-Za-z0-9]+)?)\s+(?:업무|관련업무|관련\s*업무)\s*(?:담당|하는|담당자|담당하는)\s*(?:사람|직원|사원)?",
+        r"([가-힣A-Za-z0-9]+(?:\s[가-힣A-Za-z0-9]+)?)\s+담당자",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, question)
+        if not match:
+            continue
+
+        keyword = match.group(1).strip()
+        compact_keyword = compact_text(keyword)
+
+        if not compact_keyword or len(compact_keyword) < 2:
+            continue
+
+        if compact_keyword in known_org_terms:
+            continue
+
+        return keyword
+
+    return None
+
+
 def build_fallback_analysis(question: str) -> dict:
     """
-    LLM 응답 JSON이 깨졌을 때 사용하는 최소 fallback 분석기.
-
-    정상 경로는 LLM 분석 결과를 사용하고, 이 함수는 JSON 파싱 실패 시에만 사용한다.
+    LLM 응답이 깨지거나 의미없는 결과를 반환했을 때 사용하는 코드 기반 fallback 분석기.
     """
 
     compact_question = compact_text(question)
-    target_fields = []
+    is_collection = is_employee_collection_query(question)
 
     if (
-        is_employee_collection_query(question)
+        is_collection
         and ("퇴사" in compact_question or "퇴직" in compact_question)
     ):
         return {
@@ -249,6 +340,161 @@ def build_fallback_analysis(question: str) -> dict:
             ]
         }
 
+    # "방씨인 사람", "김씨 직원" 같은 성씨 prefix 패턴 감지
+    fallback_filters = []
+    fallback_target_fields = []
+    employee_name_candidate = None
+
+    if is_collection and not is_self_question(question):
+        surname_match = re.search(r'([가-힣]{1,2})씨', question)
+        if surname_match:
+            employee_name_candidate = surname_match.group(1) + "씨"
+
+    # "프로젝트관리 하는사람", "회계 담당자" 같은 담당업무 패턴 감지
+    job_duty_keyword = _extract_job_duty_keyword(question)
+    if job_duty_keyword:
+        fallback_filters.append({
+            "field": "previous_task",
+            "op": "contains",
+            "value": job_duty_keyword,
+        })
+        fallback_target_fields.append("previous_task")
+
+    # "가천대학교 나온사람", "연세대 출신" 같은 출신대학 패턴 감지
+    university_match = re.search(
+        r'([가-힣A-Za-z0-9]+(?:대학교|대학|대))\s*(?:나온|출신|졸업)',
+        question,
+    )
+    if university_match:
+        university_keyword = university_match.group(1)
+        fallback_filters.append({
+            "field": "university",
+            "op": "contains",
+            "value": university_keyword,
+        })
+        fallback_target_fields.append("university")
+
+    # "대학원졸", "고졸", "대졸" 같은 학력 패턴 감지
+    education_patterns = [
+        (r'대학원\s*(?:졸업|졸|이상)', "대학원졸"),
+        (r'전문대\s*(?:졸업|졸)', "전문대졸"),
+        (r'고졸|고등학교\s*졸업', "고졸"),
+        (r'대졸|대학교?\s*졸업|학사', "대졸"),
+    ]
+    for edu_pattern, edu_value in education_patterns:
+        if re.search(edu_pattern, compact_question):
+            fallback_filters.append({
+                "field": "education",
+                "op": "eq",
+                "value": edu_value,
+            })
+            fallback_target_fields.append("education")
+            break
+
+    # "공채 출신", "경력직" 같은 채용경로 패턴 감지
+    hire_path_patterns = [
+        (r'인턴전환|인턴\s*출신', "인턴전환"),
+        (r'공채\s*(?:출신|로)?|공개채용', "공채"),
+        (r'경력직|경력\s*채용|경력\s*입사|경력으로\s*(?:들어온|입사|온)', "경력"),
+        (r'추천\s*(?:채용|입사|으로|으로입사)', "추천"),
+    ]
+    for hp_pattern, hp_value in hire_path_patterns:
+        if re.search(hp_pattern, compact_question):
+            fallback_filters.append({
+                "field": "hire_path",
+                "op": "eq",
+                "value": hp_value,
+            })
+            fallback_target_fields.append("hire_path")
+            break
+
+    # "정규직인 사람", "계약직 직원" 같은 계약형태 패턴 감지
+    if re.search(r'정규직\s*(?:인사람|직원|사원|인직원)?', compact_question) and "contract_type" not in fallback_target_fields:
+        fallback_filters.append({"field": "contract_type", "op": "eq", "value": "정규직"})
+        fallback_target_fields.append("contract_type")
+    elif re.search(r'계약직\s*(?:인사람|직원|사원|인직원)?', compact_question) and "contract_type" not in fallback_target_fields:
+        fallback_filters.append({"field": "contract_type", "op": "eq", "value": "계약직"})
+        fallback_target_fields.append("contract_type")
+
+    # "남성 직원", "여성 직원" 같은 성별 패턴 감지
+    if re.search(r'남성|남자\s*(?:직원|사원|사람)', compact_question):
+        fallback_filters.append({"field": "gender", "op": "eq", "value": "남"})
+        fallback_target_fields.append("gender")
+    elif re.search(r'여성|여자\s*(?:직원|사원|사람)', compact_question):
+        fallback_filters.append({"field": "gender", "op": "eq", "value": "여"})
+        fallback_target_fields.append("gender")
+
+    # "삼성전자 다니던사람", "LG 출신" 같은 이전직장 패턴 감지
+    prev_company_match = re.search(
+        r'([가-힣A-Za-z0-9]+(?:전자|그룹|기업|회사|건설|증권|은행|카드|보험|통신|에너지|산업)?)\s*(?:다니던|출신|에서\s*온|에서\s*전직)',
+        question,
+    )
+    if prev_company_match:
+        prev_company_keyword = prev_company_match.group(1)
+        # 조직 이름(부서/팀 등)이 아닌 경우에만 이전직장으로 처리
+        known_org_terms = set(DEPARTMENTS + TEAMS + JOB_GRADES + POSITIONS)
+        if compact_text(prev_company_keyword) not in known_org_terms:
+            fallback_filters.append({
+                "field": "previous_company",
+                "op": "contains",
+                "value": prev_company_keyword,
+            })
+            fallback_target_fields.append("previous_company")
+
+    # "주임중에", "대리님중에" 같이 직급을 조건으로 쓰는 패턴 감지
+    # JOB_GRADES에 없는 직급도 포함해 필터로 추가한다 (없으면 0건으로 정확한 응답)
+    if not employee_name_candidate and not any(f.get("field") == "job_grade" for f in fallback_filters):
+        jg_match = re.search(r'([가-힣]{2,4})\s*님?\s*중에', question)
+        if jg_match:
+            jg_keyword = jg_match.group(1)
+            known_org_terms = set(DEPARTMENTS + TEAMS + POSITIONS)
+            if jg_keyword not in known_org_terms:
+                fallback_filters.append({
+                    "field": "job_grade",
+                    "op": "eq",
+                    "value": jg_keyword,
+                })
+                if "employee" not in fallback_target_fields:
+                    fallback_target_fields.append("employee")
+
+    # "연봉 4천 넘는", "연봉 5천만원 이상" 같은 연봉 범위 조건 감지
+    salary_condition = _parse_salary_condition(question)
+    if salary_condition and not any(f.get("field") == "salary" for f in fallback_filters):
+        fallback_filters.append(salary_condition)
+        fallback_target_fields.append("salary")
+
+    # "빅데이터분석기사 가진사람", "정보처리기사 보유한 직원" 같은 자격증 패턴 감지
+    cert_match = re.search(
+        r'([가-힣A-Za-z0-9]+(?:기사|기능사|기술사|면허|자격증))\s*(?:가진|보유한|보유|있는|소지한)?',
+        question,
+    )
+    if cert_match:
+        cert_keyword = cert_match.group(1).strip()
+        if len(compact_text(cert_keyword)) >= 2:
+            fallback_filters.append({
+                "field": "certificate",
+                "op": "contains",
+                "value": cert_keyword,
+            })
+            fallback_target_fields.append("certificate")
+
+    if employee_name_candidate or fallback_filters:
+        return {
+            "tasks": [
+                {
+                    "intent": "condition_search",
+                    "target_fields": ["employee"] + fallback_target_fields,
+                    "employee_name": employee_name_candidate,
+                    "employee_id": None,
+                    "department": None,
+                    "team": None,
+                    "position": None,
+                    "filters": fallback_filters,
+                    "is_self": False,
+                }
+            ]
+        }
+
     keyword_to_field = [
         (["주민등록번호", "주민번호"], "rrn"),
         (["사원번호", "사번"], "employee_id"),
@@ -266,10 +512,13 @@ def build_fallback_analysis(question: str) -> dict:
         (["성과점수"], "performance_score"),
         (["평가", "고과", "인사고과"], get_evaluation_field_from_question(compact_question)),
         (["토익점수", "토익", "TOEIC점수", "TOEIC"], "toeic"),
+        (["자격증", "자격증보유", "자격증있는", "기사자격증", "기능사자격증"], "certificate"),
+        (["포상이력", "포상", "수상이력", "수상"], "award_history"),
         (["징계이력", "징계"], "disciplinary_history"),
         (["변경이력", "변경내역", "변경사항", "수정이력"], "change_history"),
     ]
 
+    target_fields = []
     for keywords, field in keyword_to_field:
         if any(keyword in compact_question for keyword in keywords):
             target_fields.append(field)
@@ -280,7 +529,7 @@ def build_fallback_analysis(question: str) -> dict:
     employee_id = extract_employee_id(question)
     employee_name = None if employee_id else extract_employee_name(question)
     is_self = is_self_question(question)
-    intent = "condition_search" if is_employee_collection_query(question) else "single_lookup"
+    intent = "condition_search" if is_collection else "single_lookup"
 
     return {
         "tasks": [
@@ -441,11 +690,13 @@ def find_org_alias(question: str) -> tuple[str, str] | None:
     ]
 
     for rule in ORG_ALIAS_RULES:
+        # 공백 제거 없이 원본 질문에서 키워드를 찾는다.
+        # compact_text를 쓰면 "방씨인 사람" → "방씨인사람"이 되어 "인사"가 오탐된다.
         matched_keyword = next(
             (
                 keyword
                 for keyword in sorted(rule["keywords"], key=len, reverse=True)
-                if keyword in compact_question
+                if keyword in question
             ),
             None,
         )
@@ -1043,6 +1294,8 @@ def normalize_target_fields_by_question(
         (["성과점수"], "performance_score"),
         (["평가", "고과", "인사고과"], evaluation_field),
         (["토익점수", "토익", "TOEIC점수", "TOEIC"], "toeic"),
+        (["자격증", "자격증보유", "자격증있는", "기사자격증", "기능사자격증"], "certificate"),
+        (["포상이력", "포상", "수상이력", "수상"], "award_history"),
         (["징계이력", "징계"], "disciplinary_history"),
         (["변경이력", "변경내역", "변경사항", "수정이력"], "change_history"),
     ]
@@ -1458,9 +1711,25 @@ def analyze_question_to_tasks(question: str, candidates: dict | None = None) -> 
         - 성과점수 -> performance_score
         - 평가, 고과, 인사평가 -> evaluation_2024
         - 토익점수, 토익, TOEIC점수, TOEIC -> toeic
+        - 자격증, 보유자격증, 자격증명, 기사자격증 -> certificate
+        - 포상이력, 포상, 수상이력, 수상 -> award_history
         - 징계이력, 징계 -> disciplinary_history
         - 주민등록번호, 주민번호 -> rrn
         - 변경이력, 변경내역, 변경사항, 수정이력 -> change_history
+        - 이전담당업무, 담당업무, 담당하는업무, 하는업무, 업무내용 -> previous_task
+        - 출신대학, 나온학교, 졸업학교, 대학교이름 -> university
+        - 학력, 대학원졸, 대졸, 고졸, 전문대졸 -> education
+        - 채용경로, 공채, 인턴전환, 추천채용, 경력채용 -> hire_path
+        - 성별, 남성, 여성, 남자, 여자 -> gender
+        - 이전직장명, 이전직장, 전직장, 이전회사, 전회사 -> previous_company
+        - 이전최종직급, 이전직장직급 -> previous_job_grade
+
+        담당업무 필터 규칙:
+        - "X 하는사람", "X 담당하는사람", "X 업무 담당자", "X 관련 업무"처럼 구체적인 업무 키워드가 있으면 previous_task|contains|X 필터를 만든다.
+        - 단, 부서 별칭("인사", "영업", "개발", "기획", "마케팅")이 명확히 매칭되면 previous_task 대신 department 필터를 우선한다.
+        - 예) "프로젝트관리 하는사람" → filters=previous_task|contains|프로젝트관리
+        - 예) "영업 관련 업무 담당자" → department=영업부, filters=department|eq|영업부
+        - 예) "채용 업무 담당하는사람" → team=채용팀, filters=team|eq|채용팀
 
         target_fields 최종 점검:
         - 최종 반환 전에 사용자 질문 원문을 다시 읽고, 답변으로 보고 싶어 하는 필드가 target_fields에서 빠졌는지 반드시 점검한다.
@@ -1494,6 +1763,22 @@ def analyze_question_to_tasks(question: str, candidates: dict | None = None) -> 
         - 대리 직원 -> job_grade=대리, filters=job_grade|eq|대리
         - 팀장 누구야 -> position=팀장, filters=position|eq|팀장
         - 인사 업무 담당자 누구야 -> department=인사부, filters=department|eq|인사부
+        - 프로젝트관리 하는사람 -> target_fields=employee,previous_task, filters=previous_task|contains|프로젝트관리
+        - 프로젝트 관련 업무 담당자 -> target_fields=employee,previous_task, filters=previous_task|contains|프로젝트
+        - 회계 업무 담당하는사람 -> target_fields=employee,previous_task, filters=previous_task|contains|회계
+        - 방씨 중에 프로젝트관리 하는사람 -> employee_name=방씨, target_fields=employee,previous_task, filters=previous_task|contains|프로젝트관리
+        - 가천대학교 나온사람 -> target_fields=employee,university, filters=university|contains|가천대학교
+        - 대학원졸업한사람 -> target_fields=employee,education, filters=education|eq|대학원졸
+        - 고졸인 직원 -> target_fields=employee,education, filters=education|eq|고졸
+        - 가천대학교 나온사람 중에 대학원졸업한사람 -> target_fields=employee,university,education, filters=university|contains|가천대학교;education|eq|대학원졸
+        - 공채 출신 직원 -> target_fields=employee,hire_path, filters=hire_path|eq|공채
+        - 경력직으로 입사한 사람 -> target_fields=employee,hire_path, filters=hire_path|eq|경력
+        - 남성 직원 -> target_fields=employee,gender, filters=gender|eq|남
+        - 여성 직원 -> target_fields=employee,gender, filters=gender|eq|여
+        - 삼성전자 출신 직원 -> target_fields=employee,previous_company, filters=previous_company|contains|삼성전자
+        - 빅데이터분석기사 가진 과장 -> job_grade=과장, target_fields=employee,certificate, filters=job_grade|eq|과장;certificate|contains|빅데이터분석기사
+        - 정보처리기사 보유한 직원 -> target_fields=employee,certificate, filters=certificate|contains|정보처리기사
+        - 자격증 있는 사람 -> target_fields=employee,certificate, filters=certificate|exists|true
 
         출력 예시:
         intent=condition_search
@@ -1583,6 +1868,23 @@ def analyze_question_to_tasks(question: str, candidates: dict | None = None) -> 
                 "[DEBUG] question analysis parsed:",
                 json.dumps(analysis, ensure_ascii=False),
             )
+
+            # LLM이 파싱은 됐지만 실질적인 분석을 못 한 경우(all-unknown) fallback 사용
+            tasks = analysis.get("tasks", [])
+            is_all_unknown = tasks and all(
+                t.get("intent") == "unknown"
+                and t.get("target_fields", []) == ["unknown"]
+                and not t.get("filters")
+                and not t.get("employee_name")
+                and not t.get("employee_id")
+                and not t.get("department")
+                and not t.get("team")
+                for t in tasks
+            )
+            if is_all_unknown:
+                print("[DEBUG] LLM returned all-unknown → code-level fallback")
+                return build_fallback_analysis(question)
+
             return analysis
 
         except Exception as e:
@@ -2125,7 +2427,9 @@ def normalize_tasks(
             task_is_self = True
 
         if requested_employee_collection:
-            employee_name = None
+            # "방씨" 같은 성씨 부분일치 패턴은 나중에 prefix 필터로 변환하므로 지우지 않는다
+            if not re.fullmatch(r"[가-힣]{1,2}씨", compact_text(employee_name or "")):
+                employee_name = None
             employee_id = None
             task_is_self = False
 
@@ -2195,6 +2499,74 @@ def normalize_tasks(
                         item.get("value"),
                     )
                 ]
+
+        # -------------------------
+        # 5-1. 코드 레벨 조건 보정
+        # LLM이 조건 필터를 일부 놓쳤을 때 코드에서 보완한다.
+        # -------------------------
+
+        # 자격증 패턴 보정: "빅데이터분석기사 가진 과장" → certificate|contains|빅데이터분석기사
+        if not any(f.get("field") == "certificate" for f in filters):
+            cert_match = re.search(
+                r'([가-힣A-Za-z0-9]+(?:기사|기능사|기술사|면허|자격증))\s*(?:가진|보유한|보유|있는|소지한)?',
+                question,
+            )
+            if cert_match:
+                cert_keyword = cert_match.group(1).strip()
+                if len(compact_text(cert_keyword)) >= 2:
+                    filters = filters + [{"field": "certificate", "op": "contains", "value": cert_keyword}]
+                    if "certificate" not in safe_fields:
+                        safe_fields = list(safe_fields) + ["certificate"]
+
+        # 담당업무 패턴 보정: "프로젝트관리 하는사람" → previous_task|contains|프로젝트관리
+        if not any(f.get("field") == "previous_task" for f in filters):
+            job_duty_kw = _extract_job_duty_keyword(question)
+            if job_duty_kw:
+                filters = filters + [{"field": "previous_task", "op": "contains", "value": job_duty_kw}]
+                if "previous_task" not in safe_fields:
+                    safe_fields = list(safe_fields) + ["previous_task"]
+
+        # 연봉 범위 보정: "연봉 4천 넘는" → salary|gt|40000000
+        if not any(f.get("field") == "salary" for f in filters):
+            salary_cond = _parse_salary_condition(question)
+            if salary_cond:
+                filters = filters + [salary_cond]
+                if "salary" not in safe_fields:
+                    safe_fields = list(safe_fields) + ["salary"]
+
+        # "주임중에" 같이 JOB_GRADES에 없는 직급 조건 보정
+        # job_grade가 없는 상태에서만 "X중에" 패턴을 탐지해 필터로 추가한다
+        if not job_grade and not any(f.get("field") == "job_grade" for f in filters):
+            jg_match = re.search(r'([가-힣]{2,4})\s*님?\s*중에', question)
+            if jg_match:
+                jg_keyword = jg_match.group(1)
+                known_org_terms = set(DEPARTMENTS + TEAMS + POSITIONS)
+                if jg_keyword not in known_org_terms and jg_keyword not in JOB_GRADES:
+                    filters = filters + [{"field": "job_grade", "op": "eq", "value": jg_keyword}]
+
+        # 성별 조건 보정: "여자만", "남성 중에" → gender|eq|여/남
+        if not any(f.get("field") == "gender" for f in filters):
+            compact_q = compact_text(question)
+            if re.search(r'여성|여자', compact_q):
+                filters = filters + [{"field": "gender", "op": "eq", "value": "여"}]
+                if "gender" not in safe_fields:
+                    safe_fields = list(safe_fields) + ["gender"]
+            elif re.search(r'남성|남자', compact_q):
+                filters = filters + [{"field": "gender", "op": "eq", "value": "남"}]
+                if "gender" not in safe_fields:
+                    safe_fields = list(safe_fields) + ["gender"]
+
+        # 계약형태 조건 보정: "계약직만", "정규직은" → contract_type|eq|계약직/정규직
+        if not any(f.get("field") == "contract_type" for f in filters):
+            compact_q = compact_text(question)
+            if re.search(r'계약직', compact_q):
+                filters = filters + [{"field": "contract_type", "op": "eq", "value": "계약직"}]
+                if "contract_type" not in safe_fields:
+                    safe_fields = list(safe_fields) + ["contract_type"]
+            elif re.search(r'정규직', compact_q):
+                filters = filters + [{"field": "contract_type", "op": "eq", "value": "정규직"}]
+                if "contract_type" not in safe_fields:
+                    safe_fields = list(safe_fields) + ["contract_type"]
 
         # -------------------------
         # 6. 정규화된 task 추가

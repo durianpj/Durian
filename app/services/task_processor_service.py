@@ -286,9 +286,6 @@ def sanitize_filters(filters: list[dict]) -> list[dict]:
         if field == "team" and value not in TEAMS:
             continue
 
-        if field == "job_grade" and value not in JOB_GRADES:
-            continue
-
         if field == "position" and value not in POSITIONS:
             continue
 
@@ -1203,8 +1200,10 @@ def process_task(
     org_work_owner_query = is_org_work_owner_query(original_question)
 
     # 특정 직원 1명조회로 오해 하지 않도록 지운다.
+    # 단, "방씨" 같은 성씨 부분일치 패턴은 나중에 prefix 필터로 변환하므로 지우지 않는다
     if requested_employee_collection:
-        task["employee_name"] = None
+        if not normalize_partial_employee_name_filter(task.get("employee_name")):
+            task["employee_name"] = None
         task["employee_id"] = None
         if intent == "single_lookup":
             intent = "condition_search"
@@ -1340,6 +1339,24 @@ def process_task(
 
     # filters에서 권한 판단에 필요한 field 목록을 꺼낸다.
     filter_fields = get_filter_fields(filters)
+
+    # 내용 기반 필터(이전담당업무·자격증·평가 등)는 답변에도 같이 보여줘서
+    # 어떤 근거로 매칭됐는지 사용자가 알 수 있게 한다.
+    # 부서·팀·직책·직급 같은 구조 필터는 이미 출력에 반영되므로 제외한다.
+    STRUCTURAL_FILTER_FIELDS = {
+        "department", "team", "position", "job_grade",
+        "department_level", "job_grade_level",
+        "employee", "employee_name", "employee_id",
+    }
+    content_filter_fields = [
+        f["field"]
+        for f in filters
+        if isinstance(f, dict)
+        and f.get("field") in FIELD_RULES
+        and f.get("field") not in STRUCTURAL_FILTER_FIELDS
+    ]
+    if content_filter_fields:
+        target_fields = unique_keep_order(target_fields + content_filter_fields)
 
     if intent == "unknown" and target_fields:
         intent = "single_lookup"

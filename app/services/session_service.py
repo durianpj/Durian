@@ -411,6 +411,7 @@ def compose_followup_question_with_llm(
         memory.get("last_team")
         or memory.get("last_department")
         or memory.get("last_position")
+        or memory.get("last_job_grade")
         or ""
     )
     topic_labels = ", ".join(memory.get("last_topic_labels") or []) or "(없음)"
@@ -435,22 +436,51 @@ def compose_followup_question_with_llm(
     이전 토픽 라벨: {topic_labels}
     현재 질문: {question}
 
-    판단 기준:
-    - 현재 질문에 사람·조직 대상이 이미 명시되어 있으면 NONE.
-    - 현재 질문이 그 자체로 완전한 독립 질문이면 NONE.
-    - 현재 질문이 이전 답변/대상을 한정·되묻기·확인·구체화하는 표현이면 후속이다.
+    아주 중요한 원칙:
+    - 확실하지 않으면 무조건 NONE을 출력해라. NONE이 안전한 기본값이다.
+    - 이전 대화와 완전히 다른 새 주제(새 이름, 새 직무, 완전히 다른 조건)가 나오면 NONE.
+    - 현재 질문이 완성된 독립 문장이고 이전 문맥 없이도 의미가 통하면 NONE.
+    - 절대로 원본에 없는 사번/이름/부서/팀/직무를 추가하지 마라. 보강은 이전 대화에서 명시된 대상을 그대로 끼워넣는 것만 허용된다.
 
-    보강 규칙(후속일 때):
+    후속으로 봐도 되는 경우(아래 패턴에 해당할 때만):
+    - 지시 대명사·되묻기: "그거", "이거", "그게 다야?", "더 없어?", "정말?"
+    - 한정 조사로 이전 답변을 좁히는 표현: "X도", "X만", "X밖에", "X뿐"
+    - 명백히 같은 토픽을 짧게 이어가는 단편: "이메일은?", "그러면 직급은?"
+    - 이전 직급/부서/팀만 다른 직급/부서/팀으로 교체해 같은 조건을 다시 물어보는 경우: "과장은?", "차장중엔?", "인사부는?"
+    - 이전 조건의 숫자값만 바꿔 다시 묻는 경우: "5천 이상은?", "3천 미만은?"
+    - 이전 결과에 새 조건을 추가로 좁히는 경우: "그 중에 여자만", "거기서 계약직만", "그 사람들 중 인사부만"
+    - 이전 직원/조직 대상의 다른 필드를 묻는 단편: "거기 이메일은?", "그분 부서는?"
+
+    보강 규칙(후속일 때만 적용):
     - 이전 직원/조직 대상을 사용해 누구에 대한 질문인지 명시한다.
-    - 이전 토픽 라벨이 있고 현재 질문이 그 토픽을 가리키면 한국어 자연 어순으로 토픽을 포함시킨다.
-    - 현재 질문의 어휘(예: "그거", "밖에", "더")는 보존해서 사용자 의도를 그대로 살린다.
+    - 이전 조건(직급·부서·연봉·계약형태 등)을 그대로 유지하되, 현재 질문에서 바뀐 부분만 교체/추가한다.
+    - 현재 질문의 어휘는 그대로 보존한다.
     - 답변이나 새로운 정보를 만들지 마라. 질문만 다시 쓴다.
 
-    출력 예시:
+    출력 예시(후속 → 보강):
     - 이전 질문: 내 변경이력 알려줘 / 현재 질문: 그거밖에없어? → EMP0003의 변경이력이 그거밖에 없어?
-    - 이전 질문: 김민수 부서 알려줘 / 현재 질문: 이메일도 알려줘 → 김민수 이메일도 알려줘
+    - 이전 질문: 김민수 부서 알려줘 / 현재 질문: 이메일은? → 김민수 이메일 알려줘
+    - 이전 질문: 김민수 부서 알려줘 / 현재 질문: 직급도 알려줘 → 김민수 직급도 알려줘
     - 이전 질문: 채용팀 직원 알려줘 / 현재 질문: 계약직도 알려줘 → 채용팀 계약직 직원 알려줘
-    - 이전 질문: 아무거나 / 현재 질문: 2024년 입사자 알려줘 → NONE
+    - 이전 질문: 마케팅부 직원 알려줘 / 현재 질문: 거기 팀장 누구야? → 마케팅부 팀장 누구야?
+    - 이전 질문: 대리 중에 연봉 4천 넘는 분 있어? / 이전 조직 대상: 대리 / 현재 질문: 과장중엔? → 과장 중에 연봉 4천 넘는 분 있어?
+    - 이전 질문: 대리 중에 연봉 4천 넘는 분 있어? / 이전 조직 대상: 대리 / 현재 질문: 차장은? → 차장 중에 연봉 4천 넘는 분 있어?
+    - 이전 질문: 대리 중에 연봉 4천 넘는 분 있어? / 이전 조직 대상: 대리 / 현재 질문: 5천 이상은? → 대리 중에 연봉 5천 이상인 분 있어?
+    - 이전 질문: 대리 중에 연봉 4천 넘는 분 있어? / 이전 조직 대상: 대리 / 현재 질문: 여자만 알려줘 → 대리 중에 연봉 4천 넘는 여자 알려줘
+    - 이전 질문: 대리 중에 연봉 4천 넘는 분 있어? / 이전 조직 대상: 대리 / 현재 질문: 계약직은? → 계약직 대리 중에 연봉 4천 넘는 분 있어?
+    - 이전 질문: 대리 중에 연봉 4천 넘는 분 있어? / 이전 조직 대상: 대리 / 현재 질문: 인사부에선? → 인사부 대리 중에 연봉 4천 넘는 분 있어?
+    - 이전 질문: 인사부 직원 중에 계약직 있어? / 현재 질문: 영업부는? → 영업부 직원 중에 계약직 있어?
+    - 이전 질문: 가천대학교 나온사람 중에 대학원졸 있어? / 현재 질문: 연세대는? → 연세대 나온사람 중에 대학원졸 있어?
+
+    출력 예시(독립 새 질문 → NONE):
+    - 이전 질문: 잔업시간 제일 많은사람 알려줘 / 현재 질문: 프로젝트관리 하는사람 중에 방씨인 사람있지않아? → NONE
+    - 이전 질문: 김민수 부서 알려줘 / 현재 질문: 2024년 입사자 알려줘 → NONE
+    - 이전 질문: 내 변경이력 알려줘 / 현재 질문: 인턴전환한 사람알려줘 → NONE
+    - 이전 질문: 내 변경이력 알려줘 / 현재 질문: 마케팅부 직원 알려줘 → NONE
+    - 이전 질문: 엄성민 연봉 알려줘 / 현재 질문: 박서준 부서는? → NONE
+    - 이전 질문: 채용팀 직원 알려줘 / 현재 질문: 평가 정보 있는 직원 찾아줘 → NONE
+
+    위 원칙과 예시를 바탕으로 출력해라. 확실하지 않으면 NONE.
     """.strip()
 
     try:
@@ -476,7 +506,66 @@ def compose_followup_question_with_llm(
     if not first_line or first_line.upper() == "NONE":
         return None
 
+    # 자체검증: LLM이 hallucination으로 원본에 없던 새 대상을 끼워넣었으면 reject.
+    # 허용되는 추가는 메모리의 이전 대상(employee_target, org_target)뿐이다.
+    if not _is_safe_composition(
+        composed=first_line,
+        original_question=question,
+        allowed_targets=[employee_target, org_target],
+    ):
+        print(f"[DEBUG] followup compose rejected (hallucinated entity) -> use original")
+        return None
+
     return first_line
+
+
+def _is_safe_composition(
+    composed: str,
+    original_question: str,
+    allowed_targets: list[str],
+) -> bool:
+    """
+    LLM이 보강한 문장이 안전한지 검증한다.
+
+    원칙:
+    - 보강된 문장의 '대상'(사번/이름/부서/팀)은 원본 질문에 이미 있었거나 메모리의 이전 대상이어야 한다.
+    - 메모리에 없는 새 사번/이름/부서/팀이 추가됐으면 hallucination으로 보고 reject.
+    """
+
+    allowed_set = {str(t).strip() for t in allowed_targets if t}
+
+    # 보강된 문장 안의 사번 검사
+    composed_emp_ids = set(re.findall(r"EMP\d{4,}", composed.upper()))
+    original_emp_ids = set(re.findall(r"EMP\d{4,}", original_question.upper()))
+
+    for emp_id in composed_emp_ids:
+        if emp_id in original_emp_ids:
+            continue
+        if emp_id in allowed_set:
+            continue
+        return False
+
+    # 부서/팀 명시 검사
+    for value in DEPARTMENTS + TEAMS:
+        if value in composed and value not in original_question and value not in allowed_set:
+            return False
+
+    # 직원 이름은 메모리의 last_employee_name과 비교한다(원본에 없고 메모리에도 없는 이름은 위험).
+    # 단, 일반 단어와 충돌할 수 있으므로 한글 2~4글자 + 직원 명부 존재 검증을 같이 한다.
+    composed_korean_chunks = set(re.findall(r"[가-힣]{2,4}", composed))
+    original_korean_chunks = set(re.findall(r"[가-힣]{2,4}", original_question))
+    new_chunks = composed_korean_chunks - original_korean_chunks
+
+    for chunk in new_chunks:
+        # 메모리 허용 대상에 포함되면 OK
+        if chunk in allowed_set:
+            continue
+        # 진짜 직원 명부에 있는 이름이 새로 끼어든 경우만 위험으로 본다.
+        # (조사·일반 단어가 우연히 매칭되는 false positive 방지)
+        if employee_name_exists(chunk):
+            return False
+
+    return True
 
 
 def resolve_question_with_memory(question: str, requester_employee_id: str) -> str:
@@ -603,5 +692,10 @@ def update_memory_from_tasks(
 
         if task.get("position"):
             memory["last_position"] = task["position"]
+            memory.pop("last_employee_name", None)
+            memory.pop("last_employee_id", None)
+
+        if task.get("job_grade"):
+            memory["last_job_grade"] = task["job_grade"]
             memory.pop("last_employee_name", None)
             memory.pop("last_employee_id", None)

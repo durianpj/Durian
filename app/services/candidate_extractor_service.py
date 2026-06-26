@@ -207,13 +207,13 @@ def _find_org_alias_candidates(question: str) -> dict[str, list[str]]:
 
     # 미리 정의된 조직 별칭 규칙 목록(ORG_ALIAS_CANDIDATES)을 하나씩 순회
     for rule in ORG_ALIAS_CANDIDATES:
-        # 규칙 내 키워드들을 글자 수가 긴 순서대로 정렬하여, 질문에 포함되어 있는지 검사
-        # (예: '인사팀'을 '인사'보다 먼저 매칭하기 위함)
+        # 공백 제거 없이 원본 질문에서 키워드를 찾는다.
+        # compact_text를 쓰면 "방씨인 사람" → "방씨인사람"이 되어 "인사"가 오탐된다.
         matched_keyword = next(
             (
                 keyword
                 for keyword in sorted(rule["keywords"], key=len, reverse=True)
-                if keyword in compact_question
+                if keyword in question
             ),
             None,
         )
@@ -222,7 +222,7 @@ def _find_org_alias_candidates(question: str) -> dict[str, list[str]]:
         if not matched_keyword:
             continue
 
-        # [예외 처리] 매칭된 단어가 "인사"인데, "인사고과"나 "인사평가" 같은 맥락이라면 
+        # [예외 처리] 매칭된 단어가 "인사"인데, "인사고과"나 "인사평가" 같은 맥락이라면
         # 실제 인사 부서를 찾는 게 아니므로 결과에서 제외
         if matched_keyword == "인사" and any(
             phrase in compact_question
