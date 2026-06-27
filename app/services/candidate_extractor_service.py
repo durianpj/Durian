@@ -138,6 +138,13 @@ def _get_field_terms() -> list[str]:
         "징계이력",
         "급여",
         "연봉",
+        "이전직장",
+        "전직장",
+        "이전회사",
+        "전회사",
+        "이전최종직급",
+        "이전담당업무",
+        "담당업무",
     ]
 
     terms.extend(aliases)
@@ -200,13 +207,13 @@ def _find_org_alias_candidates(question: str) -> dict[str, list[str]]:
 
     # 미리 정의된 조직 별칭 규칙 목록(ORG_ALIAS_CANDIDATES)을 하나씩 순회
     for rule in ORG_ALIAS_CANDIDATES:
-        # 규칙 내 키워드들을 글자 수가 긴 순서대로 정렬하여, 질문에 포함되어 있는지 검사
-        # (예: '인사팀'을 '인사'보다 먼저 매칭하기 위함)
+        # 공백 제거 없이 원본 질문에서 키워드를 찾는다.
+        # compact_text를 쓰면 "방씨인 사람" → "방씨인사람"이 되어 "인사"가 오탐된다.
         matched_keyword = next(
             (
                 keyword
                 for keyword in sorted(rule["keywords"], key=len, reverse=True)
-                if keyword in compact_question
+                if keyword in question
             ),
             None,
         )
@@ -215,7 +222,7 @@ def _find_org_alias_candidates(question: str) -> dict[str, list[str]]:
         if not matched_keyword:
             continue
 
-        # [예외 처리] 매칭된 단어가 "인사"인데, "인사고과"나 "인사평가" 같은 맥락이라면 
+        # [예외 처리] 매칭된 단어가 "인사"인데, "인사고과"나 "인사평가" 같은 맥락이라면
         # 실제 인사 부서를 찾는 게 아니므로 결과에서 제외
         if matched_keyword == "인사" and any(
             phrase in compact_question
@@ -274,6 +281,68 @@ def _find_terms_in_question(question: str, terms: list[str]) -> list[str]:
     return matched
 
 
+def _value_appears_outside_container_terms(
+    question: str,
+    value: str,
+    container_terms: list[str],
+) -> bool:
+    compact_question = compact_text(question)
+    compact_value = compact_text(value)
+
+    if not compact_question or not compact_value:
+        return False
+
+    container_spans = []
+
+    for term in container_terms:
+        compact_term = compact_text(term)
+
+        if (
+            not compact_term
+            or compact_term == compact_value
+            or compact_value not in compact_term
+        ):
+            continue
+
+        start = compact_question.find(compact_term)
+
+        while start != -1:
+            container_spans.append((start, start + len(compact_term)))
+            start = compact_question.find(compact_term, start + 1)
+
+    start = compact_question.find(compact_value)
+
+    while start != -1:
+        end = start + len(compact_value)
+
+        if not any(span_start <= start and end <= span_end for span_start, span_end in container_spans):
+            return True
+
+        start = compact_question.find(compact_value, start + 1)
+
+    return False
+
+
+def _is_employee_noun_usage(question: str, value: str | None) -> bool:
+    if value != "사원":
+        return False
+
+    compact_question = compact_text(question)
+
+    if not compact_question.endswith("사원"):
+        return False
+
+    prefix = compact_question[:-len("사원")]
+
+    if not prefix:
+        return False
+
+    if prefix.endswith(("부", "팀")):
+        return True
+
+    return any(org and org in prefix for org in DEPARTMENTS + TEAMS)
+
+
 def _find_unknown_org_candidates(question: str, known_org_terms: set[str]) -> list[str]:
     """
     기준 데이터에는 없지만 조직명처럼 보이는 후보를 찾는다.
@@ -303,6 +372,12 @@ def _find_unknown_org_candidates(question: str, known_org_terms: set[str]) -> li
     # 예: 마케팅부, DX전략실, 데이터팀
     for match in re.finditer(r"[가-힣A-Za-z0-9]+(?:본부|부서|부|팀|실)", compact_question):
         value = match.group()
+        start, end = match.span()
+
+        if value.endswith("부") and re.search(r"\d+(?:살|세)?부$", value):
+            after = compact_question[end:end + 2]
+            if after.startswith("터"):
+                continue
 
         # 이미 알고 있는 부서/팀/직급/직책이면 unknown 후보에서 제외
         if value in known_org_terms:
@@ -369,7 +444,17 @@ def extract_question_candidates(question: str) -> dict:
     )
 
     # 질문 안에서 직급 후보 찾기
-    job_grades = _find_terms_in_question(question, JOB_GRADES)
+    field_terms = _get_field_terms()
+    job_grades = [
+        job_grade
+        for job_grade in _find_terms_in_question(question, JOB_GRADES)
+        if _value_appears_outside_container_terms(
+            question=question,
+            value=job_grade,
+            container_terms=field_terms,
+        )
+        and not _is_employee_noun_usage(question, job_grade)
+    ]
 
     # 질문 안에서 직책 후보 찾기
     positions = _find_terms_in_question(question, POSITIONS)
@@ -390,7 +475,7 @@ def extract_question_candidates(question: str) -> dict:
     dictionary_terms = []
 
     candidate_terms = _unique_keep_order(
-        _get_field_terms() + _read_user_dictionary_terms()
+        field_terms + _read_user_dictionary_terms()
     )
 
     for term in _find_terms_in_question(question, candidate_terms):

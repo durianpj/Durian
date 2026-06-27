@@ -140,11 +140,21 @@ client = OpenSearch(
 # 같은 모델을 사용해야 벡터 차원이 맞다.
 MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
+# CUDA를 사용할 수 있으면 GPU에서 임베딩하고, 없으면 CPU로 실행한다.
+HAS_CUDA = torch.cuda.is_available()
+EMBEDDING_DEVICE = torch.device("cuda" if HAS_CUDA else "cpu")
+EMBEDDING_DTYPE = torch.float16 if HAS_CUDA else torch.float32
+
 # tokenizer: 문장을 모델이 이해할 수 있는 숫자 토큰으로 변환
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
 # embedding_model: 토큰을 실제 벡터로 변환하는 모델
-embedding_model = AutoModel.from_pretrained(MODEL_NAME)
+embedding_model = AutoModel.from_pretrained(
+    MODEL_NAME,
+    torch_dtype=EMBEDDING_DTYPE,
+).to(EMBEDDING_DEVICE)
+embedding_model.eval()
+print(f"[INFO] embedding model device: {EMBEDDING_DEVICE}")
 
 
 # =========================
@@ -565,6 +575,37 @@ def build_context(search_hits, question="", allowed_fields=None):
                 label = rule.get("label", field_key)
                 lines.append(f"{label}: {value}")
 
+        changed = source.get("changed")
+        if changed and isinstance(changed, list):
+            # change_history가 target_fields에 있으면 이력 전체를 보여준다.
+            # (인덱스 레벨로 이미 권한 통제가 됨)
+            # 그 외에는 allowed_fields 기준 라벨만 허용해 권한 밖 필드 이력을 숨긴다.
+            show_all_history = "change_history" in (allowed_fields or [])
+            allowed_labels = set()
+            if not show_all_history:
+                for fk in allowed_fields:
+                    rule = FIELD_RULES.get(fk)
+                    if rule:
+                        if rule.get("label"):
+                            allowed_labels.add(rule["label"])
+                        if rule.get("embedding_label"):
+                            allowed_labels.add(rule["embedding_label"])
+
+            history_lines = ["변경이력:"]
+            for entry in changed:
+                timestamp = entry.get("timestamp", "")
+                for f in entry.get("fields", []):
+                    field_label = f.get("field", "")
+                    if not show_all_history and allowed_labels and field_label not in allowed_labels:
+                        continue
+                    old_val = f.get("old", "") or "없음"
+                    new_val = f.get("new", "") or "없음"
+                    history_lines.append(
+                        f"  {timestamp} | {field_label} | {old_val} → {new_val}"
+                    )
+            if len(history_lines) > 1:
+                lines.extend(history_lines)
+
         context_list.append("\n".join(lines))
 
     return "\n\n".join(context_list)
@@ -584,6 +625,10 @@ def create_question_vector(question):
 
     # 질문 문장을 토큰 형태로 변환한다.
     inputs = tokenizer(question, padding=True, truncation=True, return_tensors="pt")
+    inputs = {
+        key: value.to(EMBEDDING_DEVICE)
+        for key, value in inputs.items()
+    }
 
     # 검색용 임베딩 생성이므로 학습은 하지 않는다.
     # torch.no_grad()를 쓰면 메모리 사용이 줄어든다.
@@ -610,7 +655,7 @@ def create_question_vector(question):
     ) / torch.clamp(input_mask_expanded.sum(dim=1), min=1e-9)
 
     # OpenSearch에 보낼 수 있도록 tensor를 Python list로 변환한다.
-    vector = sentence_embedding[0].tolist()
+    vector = sentence_embedding[0].detach().cpu().tolist()
 
     return vector
 
@@ -759,6 +804,36 @@ def get_employee_ids_by_name(employee_name: str) -> list[str]:
             if hit.get("_source", {}).get("employee_id")
         )
     )
+
+
+def get_employee_name_by_id(employee_id: str) -> str | None:
+    """
+    사번으로 기본 인사정보의 직원 이름을 조회한다.
+    """
+
+    if not employee_id:
+        return None
+
+    query = {
+        "query": {
+            "term": {
+                "employee_id": employee_id.strip().upper()
+            }
+        },
+        "size": 1,
+        "_source": ["employee_name"],
+    }
+
+    response = client.search(
+        index=["hr_basic_1"],
+        body=query,
+    )
+    hits = response.get("hits", {}).get("hits", [])
+
+    if not hits:
+        return None
+
+    return hits[0].get("_source", {}).get("employee_name")
 
 
 # =========================
@@ -2013,6 +2088,13 @@ def make_sources(hits, allowed_fields=None) -> list[dict]:
             if field_key == "employee":
                 continue
 
+            # change_history는 OpenSearch의 changed 배열을 그대로 노출한다.
+            if field_key == "change_history":
+                changed = source.get("changed")
+                if changed:
+                    source_item["change_history"] = changed
+                continue
+
             rule = FIELD_RULES.get(field_key)
 
             if not rule:
@@ -2060,6 +2142,13 @@ def filter_hits_with_answer_values(hits, answer_fields: list[str]) -> list[dict]
         has_value = False
 
         for field_key in fields_to_check:
+            # change_history는 일반 필드가 아니라 OpenSearch의 changed 배열을 본다.
+            if field_key == "change_history":
+                if source.get("changed"):
+                    has_value = True
+                    break
+                continue
+
             value = get_allowed_field_value(
                 source=source,
                 embedding_text=embedding_text,

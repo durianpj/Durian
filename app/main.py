@@ -1,4 +1,6 @@
 import logging
+# import os
+# from pyngrok import ngrok
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -113,3 +115,14 @@ def chat(request: ChatRequest):
         "answer": answer,
         "model": get_active_llm_label(),
     }
+
+
+# ── ngrok 터널 (외부 공개가 필요할 때만 주석 해제) ──────────────────────────
+# 사용법:
+#   1. .env의 NGROK_AUTH_TOKEN에 ngrok 계정 토큰 입력
+#   2. 위 import 주석 해제 후 아래 블록도 주석 해제하고 서버 실행
+#
+# ngrok.set_auth_token(os.getenv("NGROK_AUTH_TOKEN", ""))
+# tunnel = ngrok.connect(8000)
+# print(f"[ngrok] 외부 접속 주소: {tunnel.public_url}")
+# ────────────────────────────────────────────────────────────────────────────
