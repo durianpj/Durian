@@ -655,6 +655,7 @@ def update_memory_from_tasks(
             memory.pop("last_department", None)
             memory.pop("last_team", None)
             memory.pop("last_position", None)
+            memory.pop("last_job_grade", None)
             continue
 
         if task.get("employee_id"):

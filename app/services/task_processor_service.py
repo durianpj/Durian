@@ -1213,7 +1213,11 @@ def process_task(
         task["employee_id"] = None
         task["is_self"] = False
         intent = "condition_search"
-        task["target_fields"] = ["employee"]
+        existing_fields = task.get("target_fields") or []
+        if "employee" not in existing_fields:
+            task["target_fields"] = ["employee"] + existing_fields
+        else:
+            task["target_fields"] = existing_fields
 
     # print("[TIME] process_task start:", intent)
 

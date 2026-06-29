@@ -393,7 +393,10 @@ def mark_requester_named_tasks_as_self(
     사용자가 자기 이름이나 자기 사번을 직접 언급한 단일 조회를 본인 조회로 보정한다.
     """
 
-    requester_employee_name = get_employee_name_by_id(requester_employee_id)
+    try:
+        requester_employee_name = get_employee_name_by_id(requester_employee_id)
+    except Exception:
+        return tasks
 
     if not requester_employee_name:
         return tasks
@@ -644,14 +647,16 @@ def update_memory_from_single_employee_result(
 
 
 def suppress_hidden_retired_results_for_multi_name_query(
+    tasks: list[dict],
     task_results: list[dict],
     employee_names: list[str],
-) -> list[dict]:
+) -> tuple[list[dict], list[dict]]:
     """
     여러 이름을 동시에 조회했을 때, 유효한 결과가 하나라도 존재한다면 권한이 없거나 숨겨진 퇴사자 결과는 필터링하여 감추는 함수
+    tasks와 task_results를 함께 필터링해 인덱스 불일치를 방지한다.
     """
     if len(employee_names) <= 1:
-        return task_results
+        return tasks, task_results
 
     has_visible_result = any(
         result.get("permission", {}).get("allowed") and result.get("sources")
@@ -659,13 +664,18 @@ def suppress_hidden_retired_results_for_multi_name_query(
     )
 
     if not has_visible_result:
-        return task_results
+        return tasks, task_results
 
-    return [
-        result
-        for result in task_results
+    filtered = [
+        (task, result)
+        for task, result in zip(tasks, task_results)
         if result.get("permission", {}).get("allowed")
     ]
+    if not filtered:
+        return tasks, task_results
+
+    filtered_tasks, filtered_results = zip(*filtered)
+    return list(filtered_tasks), list(filtered_results)
 
 
 def handle_rag_chat(question: str, employee_id: str) -> dict:
@@ -926,7 +936,8 @@ def handle_rag_chat(question: str, employee_id: str) -> dict:
     ]
     
     # 다중 이름 조회 시, 퇴사자 정보 노출을 제한해야 하는 비즈니스 규칙에 따라 결과 마스킹/숨김 처리
-    task_results = suppress_hidden_retired_results_for_multi_name_query(
+    tasks, task_results = suppress_hidden_retired_results_for_multi_name_query(
+        tasks=tasks,
         task_results=task_results,
         employee_names=employee_name_candidates,
     )
